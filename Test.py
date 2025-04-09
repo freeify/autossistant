@@ -19,7 +19,7 @@ from caret_tracker import AccurateCaretTracker
 CONFIG = {
     'SERVER_HOST': '127.0.0.1',
     'SERVER_PORT': 66439,
-    'API_KEY': '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',
+    'API_KEY': 'x',
     # Delay in seconds between clicks, adjust based on system performance
     'CLICK_DELAY': 0.1,
     'COPY_PASTE_DELAY': 0.2,
