@@ -16,7 +16,7 @@ from line_detection import (
 )
 
 # Define the input image path
-image_path = r"C:\Users\EphraimMataranyika\Pictures\Screenshots\Omni Parser\Screenshot 2025-04-02 142655.png"
+image_path = r"C:\Users\EphraimMataranyika\Pictures\Screenshots\Omni Parser\Screenshot 2025-04-09 192417.png"
 
 # Load the image
 image = cv2.imread(image_path)
