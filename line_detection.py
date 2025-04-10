@@ -672,3 +672,621 @@ def generate_line_colors(num_lines, saturation=0.9, value=0.8):
         color = (int(b * 255), int(g * 255), int(r * 255))
         colors.append(color)
     return colors
+
+
+def improved_horizontal_line_detection(icons_info, img_height, y_tolerance_factor=0.01):
+    """
+    Group icons that are on the same horizontal line based on their y-coordinates.
+    Uses a more strict approach to avoid detecting separate lines as one.
+
+    Args:
+        icons_info: List of icon dictionaries
+        img_height: Height of the original image
+        y_tolerance_factor: Percentage of image height to use as tolerance for line grouping
+                           (lowered to be more strict)
+
+    Returns:
+        List of line groups, where each group contains icons on the same horizontal line
+    """
+    if not icons_info:
+        return []
+
+    # Calculate adaptive y-tolerance based on image height
+    # Using a smaller tolerance factor for more precise line detection
+    y_tolerance = img_height * y_tolerance_factor
+
+    # Sort icons by y-coordinate (vertical position)
+    sorted_icons = sorted(icons_info, key=lambda x: x['center_y'])
+
+    horizontal_lines = []
+    current_line = [sorted_icons[0]]
+
+    # Instead of using a fixed reference_y, we'll calculate the average y-coordinate
+    # of the current line for more accurate line detection
+    def get_line_avg_y(line):
+        return sum(icon['center_y'] for icon in line) / len(line)
+
+    reference_y = sorted_icons[0]['center_y']
+
+    # Group icons into horizontal lines
+    for icon in sorted_icons[1:]:
+        # Calculate the average y-coordinate of the current line
+        avg_y = get_line_avg_y(current_line)
+
+        # If this icon is within tolerance of the current line's average y-coordinate
+        if abs(icon['center_y'] - avg_y) <= y_tolerance:
+            current_line.append(icon)
+            # Update the reference_y with the average
+            reference_y = get_line_avg_y(current_line)
+        else:
+            # Before starting a new line, check if this icon would be better grouped
+            # with the next icon (avoid premature line breaks)
+            if icon != sorted_icons[-1]:
+                next_index = sorted_icons.index(icon) + 1
+                if next_index < len(sorted_icons):
+                    next_icon = sorted_icons[next_index]
+                    # If the next icon is closer to this icon than the current line
+                    if abs(next_icon['center_y'] - icon['center_y']) < abs(icon['center_y'] - avg_y):
+                        # Start a new line
+                        horizontal_lines.append(current_line)
+                        current_line = [icon]
+                        reference_y = icon['center_y']
+                        continue
+
+            # Start a new line
+            horizontal_lines.append(current_line)
+            current_line = [icon]
+            reference_y = icon['center_y']
+
+    # Add the last line if it has icons
+    if current_line:
+        horizontal_lines.append(current_line)
+
+    # Sort icons within each line by x-coordinate (horizontal position)
+    for line in horizontal_lines:
+        line.sort(key=lambda x: x['center_x'])
+
+    # Additional filtering step: merge lines that are very close to each other
+    # This helps avoid splitting a single logical line into multiple lines
+    i = 0
+    while i < len(horizontal_lines) - 1:
+        line1 = horizontal_lines[i]
+        line2 = horizontal_lines[i + 1]
+
+        line1_avg_y = get_line_avg_y(line1)
+        line2_avg_y = get_line_avg_y(line2)
+
+        # If the lines are extremely close, merge them
+        if abs(line1_avg_y - line2_avg_y) < y_tolerance / 2:
+            horizontal_lines[i] = line1 + line2
+            horizontal_lines[i].sort(key=lambda x: x['center_x'])
+            horizontal_lines.pop(i + 1)
+        else:
+            i += 1
+
+    # Second pass filtering: verify that each line is truly horizontal
+    # by checking the y-coordinate standard deviation
+    import numpy as np
+    filtered_lines = []
+    for line in horizontal_lines:
+        if len(line) < 2:
+            filtered_lines.append(line)
+            continue
+
+        y_coords = [icon['center_y'] for icon in line]
+        y_std = np.std(y_coords)
+        y_mean = np.mean(y_coords)
+
+        # If the standard deviation is too high relative to the mean,
+        # this might not be a true horizontal line
+        if y_std / y_mean > 0.05:  # Threshold for acceptable deviation
+            # Try to split the line into more coherent sub-lines
+            from sklearn.cluster import KMeans
+
+            # Use K-means to find potential sub-lines based on y-coordinates
+            if len(line) > 2:
+                # Estimate optimal k using silhouette score
+                from sklearn.metrics import silhouette_score
+
+                max_k = min(5, len(line))  # Set an upper limit for k
+                best_k = 2
+                best_score = -1
+
+                y_array = np.array(y_coords).reshape(-1, 1)
+
+                for k in range(2, max_k + 1):
+                    kmeans = KMeans(n_clusters=k, random_state=0).fit(y_array)
+                    labels = kmeans.labels_
+
+                    # Skip if any cluster has only one point
+                    if min(np.bincount(labels)) < 2:
+                        continue
+
+                    # Calculate silhouette score
+                    score = silhouette_score(y_array, labels)
+
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+
+                # Only split if the silhouette score indicates distinct clusters
+                if best_score > 0.5:
+                    kmeans = KMeans(n_clusters=best_k, random_state=0).fit(y_array)
+                    labels = kmeans.labels_
+
+                    # Create sub-lines based on cluster labels
+                    sub_lines = [[] for _ in range(best_k)]
+                    for i, icon in enumerate(line):
+                        sub_lines[labels[i]].append(icon)
+
+                    # Sort and add sub-lines
+                    for sub_line in sub_lines:
+                        if sub_line:
+                            sub_line.sort(key=lambda x: x['center_x'])
+                            filtered_lines.append(sub_line)
+                else:
+                    filtered_lines.append(line)
+            else:
+                filtered_lines.append(line)
+        else:
+            filtered_lines.append(line)
+
+    # Remove any empty lines
+    filtered_lines = [line for line in filtered_lines if len(line) > 0]
+
+    # Final sorting of lines by average y-coordinate
+    filtered_lines.sort(key=lambda line: get_line_avg_y(line))
+
+    return filtered_lines
+
+
+def create_non_overlapping_horizontal_visualization(horizontal_lines, image, img_width, img_height):
+    """
+    Create visualization with one bounding box per line of icons,
+    ensuring that the boxes do not overlap.
+
+    Args:
+        horizontal_lines: List of line groups
+        image: Original image to draw on
+        img_width: Width of the original image
+        img_height: Height of the original image
+
+    Returns:
+        Image with bounding boxes for horizontal lines
+    """
+    import cv2
+
+    # Create a copy of the original image
+    visualization = image.copy()
+
+    # Generate distinct colors for each line
+    import colorsys
+    colors = []
+    for i in range(len(horizontal_lines)):
+        # Use HSV color space to generate evenly distributed colors
+        h = i / len(horizontal_lines)
+        r, g, b = colorsys.hsv_to_rgb(h, 0.8, 0.9)
+        # Convert to OpenCV BGR format (0-255)
+        color = (int(b * 255), int(g * 255), int(r * 255))
+        colors.append(color)
+
+    # Calculate bounding boxes for each line with minimal padding
+    horizontal_boxes = []
+
+    for i, line in enumerate(horizontal_lines):
+        if len(line) > 0:
+            # Find the boundaries of the entire line
+            min_x = min(icon['x'] for icon in line)
+            max_x = max(icon['x'] + icon['w'] for icon in line)
+            min_y = min(icon['y'] for icon in line)
+            max_y = max(icon['y'] + icon['h'] for icon in line)
+
+            # Add minimal padding
+            h_padding = 2
+            v_padding = 1
+            min_x = max(0, min_x - h_padding)
+            min_y = max(0, min_y - v_padding)
+            max_x = min(img_width, max_x + h_padding)
+            max_y = min(img_height, max_y + v_padding)
+
+            horizontal_boxes.append({
+                'index': i,
+                'min_x': min_x,
+                'min_y': min_y,
+                'max_x': max_x,
+                'max_y': max_y,
+                'color': colors[i % len(colors)]
+            })
+
+    # Sort boxes by y-coordinate for top-to-bottom processing
+    horizontal_boxes.sort(key=lambda box: box['min_y'])
+
+    # Draw each horizontal line box
+    for box in horizontal_boxes:
+        i = box['index']
+        min_x = box['min_x']
+        min_y = box['min_y']
+        max_x = box['max_x']
+        max_y = box['max_y']
+        color = box['color']
+
+        # Draw a rectangle around the entire line
+        cv2.rectangle(visualization,
+                      (min_x, min_y),
+                      (max_x, max_y),
+                      color, 2)
+
+        # Add a line identifier with black outline for better visibility
+        text = f"Line {i + 1}"
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+
+        # Ensure the text fits within the box
+        text_x = min(min_x + 5, max_x - text_size[0] - 5)
+        text_y = min_y + text_size[1] + 5
+
+        # Draw text outline for better visibility
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            cv2.putText(visualization, text,
+                        (text_x + dx, text_y + dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+        # Draw the text in the line's color
+        cv2.putText(visualization, text,
+                    (text_x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+    return visualization, horizontal_boxes
+
+
+def create_horizontal_lines_collage(horizontal_lines, original_image, img_width, img_height):
+    """
+    Create a collage of all horizontal lines for easy visualization.
+
+    Args:
+        horizontal_lines: List of horizontal line groups
+        original_image: Original image
+        img_width: Width of the original image
+        img_height: Height of the original image
+
+    Returns:
+        Collage image containing all horizontal lines
+    """
+    import cv2
+    import numpy as np
+
+    # Skip if there are no lines
+    if not horizontal_lines:
+        return original_image.copy()
+
+    # Calculate the maximum height needed for the collage
+    max_height = 0
+    line_images = []
+
+    for i, line in enumerate(horizontal_lines):
+        if not line:
+            continue
+
+        # Find line boundaries
+        min_x = min(icon['x'] for icon in line)
+        max_x = max(icon['x'] + icon['w'] for icon in line)
+        min_y = min(icon['y'] for icon in line)
+        max_y = max(icon['y'] + icon['h'] for icon in line)
+
+        # Add padding for better visibility
+        padding = 10
+        min_x = max(0, min_x - padding)
+        min_y = max(0, min_y - padding)
+        max_x = min(img_width, max_x + padding)
+        max_y = min(img_height, max_y + padding)
+
+        # Extract the line from the original image
+        line_img = original_image[min_y:max_y, min_x:max_x].copy()
+
+        # Add a label to the line
+        cv2.putText(line_img, f"Line {i + 1}", (5, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 2)
+
+        # Add border for separation
+        border_size = 2
+        bordered_img = cv2.copyMakeBorder(
+            line_img,
+            border_size, border_size, border_size, border_size,
+            cv2.BORDER_CONSTANT,
+            value=(0, 0, 255)
+        )
+
+        line_images.append(bordered_img)
+        max_height = max(max_height, bordered_img.shape[0])
+
+    # If no line images were created, return the original
+    if not line_images:
+        return original_image.copy()
+
+    # Create a blank canvas for the collage
+    collage_height = sum(img.shape[0] for img in line_images) + (len(line_images) - 1) * 10
+    collage_width = max(img.shape[1] for img in line_images)
+    collage = np.ones((collage_height, collage_width, 3), dtype=np.uint8) * 240  # Light gray background
+
+    # Place each line image in the collage
+    y_offset = 0
+    for img in line_images:
+        collage[y_offset:y_offset + img.shape[0], :img.shape[1]] = img
+        y_offset += img.shape[0] + 10  # Add spacing between lines
+
+    return collage
+
+
+def save_horizontal_line_snapshots(horizontal_lines, original_image, output_dir, boxes=None):
+    """
+    Extract and save a snapshot of each horizontal line from the original image.
+
+    Args:
+        horizontal_lines: List of horizontal line groups
+        original_image: Original image to extract from
+        output_dir: Directory to save line snapshots
+        boxes: Optional pre-calculated bounding boxes
+
+    Returns:
+        List of saved file paths
+    """
+    import os
+    import cv2
+
+    # Create directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    saved_paths = []
+
+    # Create bounding boxes if not provided
+    if boxes is None:
+        boxes = []
+        for i, line in enumerate(horizontal_lines):
+            if len(line) > 0:
+                # Find the boundaries of the entire line
+                min_x = min(icon['x'] for icon in line)
+                max_x = max(icon['x'] + icon['w'] for icon in line)
+                min_y = min(icon['y'] for icon in line)
+                max_y = max(icon['y'] + icon['h'] for icon in line)
+
+                # Add minimal padding
+                h_padding = 2
+                v_padding = 1
+                min_x = max(0, min_x - h_padding)
+                min_y = max(0, min_y - v_padding)
+                max_x = min(original_image.shape[1], max_x + h_padding)
+                max_y = min(original_image.shape[0], max_y + v_padding)
+
+                boxes.append({
+                    'index': i,
+                    'min_x': min_x,
+                    'min_y': min_y,
+                    'max_x': max_x,
+                    'max_y': max_y
+                })
+
+    # Save each line snapshot
+    for box in boxes:
+        i = box['index']
+        min_x = box['min_x']
+        min_y = box['min_y']
+        max_x = box['max_x']
+        max_y = box['max_y']
+
+        # Extract the line region from the original image
+        line_img = original_image[min_y:max_y, min_x:max_x].copy()
+
+        # Create a copy for adding highlights
+        highlighted = line_img.copy()
+
+        # Highlight each icon in the line
+        line = horizontal_lines[i]
+        for icon in line:
+            # Calculate relative position within cropped image
+            rel_x = icon['x'] - min_x
+            rel_y = icon['y'] - min_y
+            cv2.rectangle(highlighted,
+                          (rel_x, rel_y),
+                          (rel_x + icon['w'], rel_y + icon['h']),
+                          (0, 255, 0), 1)
+
+        # Save both the original and highlighted versions
+        line_path = os.path.join(output_dir, f"hline_{i + 1}.png")
+        highlighted_path = os.path.join(output_dir, f"hline_{i + 1}_highlighted.png")
+
+        cv2.imwrite(line_path, line_img)
+        cv2.imwrite(highlighted_path, highlighted)
+
+        saved_paths.append(line_path)
+
+        # Print info about the saved line
+        print(f"Saved line {i + 1} with {len(line)} icons: {line_path}")
+
+    return saved_paths
+
+
+def create_non_overlapping_horizontal_visualization(horizontal_lines, image, img_width, img_height):
+    """
+    Create visualization with one bounding box per line of icons,
+    ensuring that the boxes do not overlap.
+
+    Args:
+        horizontal_lines: List of line groups
+        image: Original image to draw on
+        img_width: Width of the original image
+        img_height: Height of the original image
+
+    Returns:
+        Image with bounding boxes for horizontal lines
+    """
+    import cv2
+
+    # Create a copy of the original image
+    visualization = image.copy()
+
+    # Generate distinct colors for each line
+    import colorsys
+    colors = []
+    for i in range(len(horizontal_lines)):
+        # Use HSV color space to generate evenly distributed colors
+        h = i / len(horizontal_lines)
+        r, g, b = colorsys.hsv_to_rgb(h, 0.8, 0.9)
+        # Convert to OpenCV BGR format (0-255)
+        color = (int(b * 255), int(g * 255), int(r * 255))
+        colors.append(color)
+
+    # Calculate bounding boxes for each line with minimal padding
+    horizontal_boxes = []
+
+    for i, line in enumerate(horizontal_lines):
+        if len(line) > 0:
+            # Find the boundaries of the entire line
+            min_x = min(icon['x'] for icon in line)
+            max_x = max(icon['x'] + icon['w'] for icon in line)
+            min_y = min(icon['y'] for icon in line)
+            max_y = max(icon['y'] + icon['h'] for icon in line)
+
+            # Add minimal padding
+            h_padding = 2
+            v_padding = 1
+            min_x = max(0, min_x - h_padding)
+            min_y = max(0, min_y - v_padding)
+            max_x = min(img_width, max_x + h_padding)
+            max_y = min(img_height, max_y + v_padding)
+
+            horizontal_boxes.append({
+                'index': i,
+                'min_x': min_x,
+                'min_y': min_y,
+                'max_x': max_x,
+                'max_y': max_y,
+                'color': colors[i % len(colors)]
+            })
+
+    # Sort boxes by y-coordinate for top-to-bottom processing
+    horizontal_boxes.sort(key=lambda box: box['min_y'])
+
+    # Draw each horizontal line box
+    for box in horizontal_boxes:
+        i = box['index']
+        min_x = box['min_x']
+        min_y = box['min_y']
+        max_x = box['max_x']
+        max_y = box['max_y']
+        color = box['color']
+
+        # Draw a rectangle around the entire line
+        cv2.rectangle(visualization,
+                      (min_x, min_y),
+                      (max_x, max_y),
+                      color, 2)
+
+        # Add a line identifier with black outline for better visibility
+        text = f"Line {i + 1}"
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+
+        # Ensure the text fits within the box
+        text_x = min(min_x + 5, max_x - text_size[0] - 5)
+        text_y = min_y + text_size[1] + 5
+
+        # Draw text outline for better visibility
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            cv2.putText(visualization, text,
+                        (text_x + dx, text_y + dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+        # Draw the text in the line's color
+        cv2.putText(visualization, text,
+                    (text_x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+    return visualization, horizontal_boxes
+
+
+def save_horizontal_line_snapshots(horizontal_lines, original_image, output_dir, boxes=None):
+    """
+    Extract and save a snapshot of each horizontal line from the original image.
+
+    Args:
+        horizontal_lines: List of horizontal line groups
+        original_image: Original image to extract from
+        output_dir: Directory to save line snapshots
+        boxes: Optional pre-calculated bounding boxes
+
+    Returns:
+        List of saved file paths
+    """
+    import os
+    import cv2
+
+    # Create directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    saved_paths = []
+
+    # Create bounding boxes if not provided
+    if boxes is None:
+        boxes = []
+        for i, line in enumerate(horizontal_lines):
+            if len(line) > 0:
+                # Find the boundaries of the entire line
+                min_x = min(icon['x'] for icon in line)
+                max_x = max(icon['x'] + icon['w'] for icon in line)
+                min_y = min(icon['y'] for icon in line)
+                max_y = max(icon['y'] + icon['h'] for icon in line)
+
+                # Add minimal padding
+                h_padding = 2
+                v_padding = 1
+                min_x = max(0, min_x - h_padding)
+                min_y = max(0, min_y - v_padding)
+                max_x = min(original_image.shape[1], max_x + h_padding)
+                max_y = min(original_image.shape[0], max_y + v_padding)
+
+                boxes.append({
+                    'index': i,
+                    'min_x': min_x,
+                    'min_y': min_y,
+                    'max_x': max_x,
+                    'max_y': max_y
+                })
+
+    # Save each line snapshot
+    for box in boxes:
+        i = box['index']
+        min_x = box['min_x']
+        min_y = box['min_y']
+        max_x = box['max_x']
+        max_y = box['max_y']
+
+        # Extract the line region from the original image
+        line_img = original_image[min_y:max_y, min_x:max_x].copy()
+
+        # Create a copy for adding highlights
+        highlighted = line_img.copy()
+
+        # Highlight each icon in the line
+        line = horizontal_lines[i]
+        for icon in line:
+            # Calculate relative position within cropped image
+            rel_x = icon['x'] - min_x
+            rel_y = icon['y'] - min_y
+            cv2.rectangle(highlighted,
+                          (rel_x, rel_y),
+                          (rel_x + icon['w'], rel_y + icon['h']),
+                          (0, 255, 0), 1)
+
+        # Save both the original and highlighted versions
+        line_path = os.path.join(output_dir, f"hline_{i + 1}.png")
+        highlighted_path = os.path.join(output_dir, f"hline_{i + 1}_highlighted.png")
+
+        cv2.imwrite(line_path, line_img)
+        cv2.imwrite(highlighted_path, highlighted)
+
+        saved_paths.append(line_path)
+
+        # Print info about the saved line
+        print(f"Saved line {i + 1} with {len(line)} icons: {line_path}")
+
+    return saved_paths
