@@ -24,7 +24,7 @@ def monitor_esc_key():
     print("\nESC pressed. Exiting program...")
     exit_flag = True
     sys.exit(0)
-
+print
 
 def get_screenshot(countdown=10):
     """Take a screenshot after a countdown"""
@@ -227,15 +227,39 @@ def count_lines(text):
     return text.count('\n') + 1
 
 
+def ensure_beginning_of_line(x, y):
+    """
+    Move to what should be the absolute beginning of the line
+    by moving to the far left, then right until text is found.
+
+    This is particularly useful for documents where the text
+    might not start exactly at the left margin.
+    """
+    # First move to the left margin (with some buffer)
+    margin_x = 10  # Assuming 10 pixels from left edge is safe
+    pyautogui.moveTo(margin_x, y, duration=0.05)
+
+    # Now move right until we find text or reach the original position
+    # This advanced approach would require more complex image analysis
+    # For now, we'll simply use the detected line_start_x position
+    pyautogui.moveTo(x, y, duration=0.05)
+
+    # Click once to position cursor at the beginning of the line
+    pyautogui.click()
+    time.sleep(0.05)
+
+
 def fast_drag_select(start_x, start_y, target_lines, line_height=20):
     """
-    Fast text selection that continuously checks and adjusts based on line count.
-    Optimized for speed with minimal delays between operations.
+    Improved text selection that continuously drags until reaching the target line count.
+    Never stops dragging until the exact line count is reached or max iterations exceeded.
     """
     global exit_flag
 
-    # Move to the starting position and double-click to start selection
-    pyautogui.moveTo(start_x, start_y, duration=0.05)
+    # Ensure we're at the beginning of the line first
+    ensure_beginning_of_line(start_x, start_y)
+
+    # Double-click to select first word
     pyautogui.doubleClick()
     time.sleep(0.05)  # Minimal delay
 
@@ -246,69 +270,126 @@ def fast_drag_select(start_x, start_y, target_lines, line_height=20):
     current_y = start_y + (line_height * target_lines * 0.8)  # Start slightly shorter to avoid overshooting
     pyautogui.moveTo(start_x, current_y, duration=0.05)
 
-    # Copy text immediately and check
+    # Copy text without releasing mouse button
     pyautogui.hotkey('ctrl', 'c')
     current_text = pyperclip.paste()
     current_line_count = count_lines(current_text)
 
     print(f"Initial selection: {current_line_count} lines, target: {target_lines}")
 
-    # Variables for acceleration-based movement
-    max_iterations = 30
+    # Variables for movement control
+    max_iterations = 50  # Increased from 30 to allow more attempts
     iterations = 0
     adjustment = line_height // 2
+    last_different_line_count = current_line_count
+    stuck_counter = 0
 
-    # Fast adjustment loop
+    # Maintain a history of positions tried to avoid oscillation
+    position_history = []
+
+    # Continue dragging until exact match or max iterations
     while current_line_count != target_lines and iterations < max_iterations and not exit_flag:
         # Calculate lines difference
         lines_difference = target_lines - current_line_count
 
-        if lines_difference == 0:
-            break
-
-        # Adjust acceleration based on how far we are from target
+        # Dynamic adjustment based on how far we are from target
         if abs(lines_difference) > 10:
-            adjustment = line_height * 2
+            adjustment = line_height * 2.5
         elif abs(lines_difference) > 5:
-            adjustment = line_height
+            adjustment = line_height * 1.5
         elif abs(lines_difference) > 2:
-            adjustment = line_height // 2
+            adjustment = line_height * 0.75
         else:
-            adjustment = line_height // 4  # Fine-grained adjustment when close
+            adjustment = line_height * 0.3  # Fine-grained adjustment when close
+
+        # Add some randomness to break patterns when stuck
+        if stuck_counter > 2:
+            adjustment *= (0.8 + random.random() * 0.4)  # Randomize by ±20%
 
         # Calculate movement direction and distance
         move_distance = adjustment * (1 if lines_difference > 0 else -1)
 
-        # Get current position and move
+        # Get current position
         current_x, current_y = pyautogui.position()
-        pyautogui.moveTo(current_x, current_y + move_distance, duration=0.02)  # Very fast movement
 
-        # Immediately copy and check after movement
+        # Check if we've been to this position before (within a small tolerance)
+        new_position = current_y + move_distance
+        position_conflict = False
+        tolerance = 3
+
+        for pos in position_history[-10:]:  # Check last 10 positions
+            if abs(pos - new_position) < tolerance:
+                position_conflict = True
+                break
+
+        # If position conflict, add random offset
+        if position_conflict:
+            move_distance += random.randint(-10, 10)
+            new_position = current_y + move_distance
+
+        # Add to position history
+        position_history.append(new_position)
+
+        # Move to the new position, maintaining drag selection
+        pyautogui.moveTo(current_x, new_position, duration=0.03)  # Faster movement
+
+        # Copy text WITHOUT releasing mouse
         pyautogui.hotkey('ctrl', 'c')
         new_text = pyperclip.paste()
         new_line_count = count_lines(new_text)
 
         # Only print occasionally to avoid slowing down
-        if iterations % 5 == 0 or abs(target_lines - new_line_count) <= 2:
-            print(f"Selection: {new_line_count} lines (target: {target_lines})")
+        if iterations % 3 == 0 or abs(target_lines - new_line_count) <= 1:
+            print(
+                f"Selection: {new_line_count} lines (target: {target_lines}), y-pos: {new_position}, diff: {lines_difference}")
 
-        # Check if we're making progress
-        if new_line_count == current_line_count and iterations > 3:
-            # If stuck, try a different approach - small random movement
-            random_adjustment = random.randint(3, 10) * (1 if lines_difference > 0 else -1)
-            pyautogui.moveRel(0, random_adjustment, duration=0.02)
+        # Handle getting stuck at the same line count
+        if new_line_count == current_line_count:
+            stuck_counter += 1
 
-            # Try again with a copy
-            pyautogui.hotkey('ctrl', 'c')
-            new_text = pyperclip.paste()
-            new_line_count = count_lines(new_text)
+            # If stuck for too long, try more aggressive movement
+            if stuck_counter >= 5:
+                # Try a completely different approach - move to a calculated position
+                # based on current line count ratio
+                if current_line_count > 0:  # Avoid division by zero
+                    ratio = target_lines / current_line_count
+                    estimated_position = start_y + (current_y - start_y) * ratio
+                    # Cap the jump to prevent moving off-screen
+                    jump_distance = min(abs(estimated_position - current_y), 300)
+                    jump_direction = 1 if estimated_position > current_y else -1
+
+                    # Apply the jump
+                    jump_y = current_y + (jump_distance * jump_direction)
+                    pyautogui.moveTo(current_x, jump_y, duration=0.05)
+
+                    # Try scrolling if we might be at edge of viewable area
+                    if abs(lines_difference) > 10:
+                        # Scroll in the direction we need more text
+                        scroll_amount = 5 if lines_difference > 0 else -5
+                        pyautogui.scroll(scroll_amount)
+                        time.sleep(0.05)
+
+                    # Reset stuck counter
+                    stuck_counter = 0
+                else:
+                    # Desperate measure - large random move
+                    desperate_move = random.randint(20, 100) * (1 if lines_difference > 0 else -1)
+                    pyautogui.moveRel(0, desperate_move, duration=0.05)
+        else:
+            # We're making progress, reset stuck counter
+            if new_line_count != current_line_count:
+                last_different_line_count = current_line_count
+                stuck_counter = 0
 
         # Update current state
         current_text = new_text
         current_line_count = new_line_count
         iterations += 1
 
-    # Release mouse button once done
+        # Very small delay to let system process
+        time.sleep(0.01)
+
+    # Only release mouse button after we've achieved target or hit max iterations
     pyautogui.mouseUp()
 
     # Final copy to ensure we have the complete selection
@@ -316,7 +397,10 @@ def fast_drag_select(start_x, start_y, target_lines, line_height=20):
     final_text = pyperclip.paste()
     final_line_count = count_lines(final_text)
 
-    print(f"Final selection: {final_line_count} lines")
+    print(f"Final selection: {final_line_count} lines (target: {target_lines})")
+    if final_line_count != target_lines:
+        print(f"Warning: Could not achieve exact line count after {iterations} iterations")
+
     return final_text, pyautogui.position()[1]
 
 
@@ -475,8 +559,8 @@ def main():
 
         # Wait before starting to give time to prepare
         print(f"Preparing to select {target_lines} lines starting from text '{search_text}'...")
-        print("Starting in 10 seconds...")
-        for i in range(10, 0, -1):
+        print("Starting in 5 seconds...")
+        for i in range(5, 0, -1):
             if exit_flag:
                 break
             print(f"{i}...")

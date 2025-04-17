@@ -9,9 +9,6 @@ DELAY = 0.1  # Delay for better reliability
 
 
 def switch_to_editor(wait_time: int = 3) -> None:
-    # This function gives users a moment to switch their focus to the editor
-    # Prints message with countdown time and pauses execution for specified duration
-    # wait_time: number of seconds to pause (default is 3 seconds)
     """Give the user time to switch to the editor window."""
     print(f"Please switch to your editor window. Starting in {wait_time} seconds...")
     time.sleep(wait_time)

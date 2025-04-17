@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 
 # Define the input image path
-image_path = r"C:\Users\EphraimMataranyika\Pictures\Screenshots\Omni Parser\Screenshot 2025-04-10 150108.png"
+image_path = r"C:\Users\EphraimMataranyika\Pictures\Screenshots\Omni Parser\Screenshot 2025-04-11 162848.png"
 
 # Load the image
 image = cv2.imread(image_path)

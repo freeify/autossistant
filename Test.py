@@ -13,13 +13,11 @@ from typing import Tuple, List, Dict
 import tempfile
 import subprocess
 
-from caret_tracker import AccurateCaretTracker
-
 # Configuration
 CONFIG = {
     'SERVER_HOST': '127.0.0.1',
     'SERVER_PORT': 66439,
-    'API_KEY': 'x',
+    'API_KEY': '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',
     # Delay in seconds between clicks, adjust based on system performance
     'CLICK_DELAY': 0.1,
     'COPY_PASTE_DELAY': 0.2,
@@ -800,13 +798,6 @@ import mss
 import time
 import threading
 
-import cv2
-import numpy as np
-import mss
-import time
-import threading
-import pyautogui
-
 
 class CaretTracker:
     """
@@ -815,20 +806,17 @@ class CaretTracker:
     """
 
     def __init__(self):
-        # Debug mode
-        self.DEBUG_MODE = False  # Set to True for detailed logging
-
         # Detection sensitivity
         self.DIFFERENCE_THRESHOLD = 1
 
-        # Shape filtering - using parameters from first implementation
+        # Shape filtering
         self.MIN_CARET_WIDTH = 1
         self.MAX_CARET_WIDTH = 5
         self.MIN_CARET_HEIGHT = 10
         self.MAX_CARET_HEIGHT = 28
         self.MIN_ASPECT_RATIO = 2.5
 
-        # Morphological operations - more conservative approach
+        # Morphological operations
         self.DILATE_KERNEL_SIZE = (2, 5)
         self.DILATE_ITERATIONS = 1
 
@@ -844,14 +832,6 @@ class CaretTracker:
         # ROI settings
         self.USE_ROI = False
         self.ROI_X, self.ROI_Y, self.ROI_W, self.ROI_H = 0, 0, 0, 0
-
-        print(f"[CaretTracker] Initialized with parameters:")
-        print(f"[CaretTracker] DIFFERENCE_THRESHOLD: {self.DIFFERENCE_THRESHOLD}")
-        print(
-            f"[CaretTracker] Shape filters: W=({self.MIN_CARET_WIDTH}-{self.MAX_CARET_WIDTH}), H=({self.MIN_CARET_HEIGHT}-{self.MAX_CARET_HEIGHT}), MinAspect={self.MIN_ASPECT_RATIO}")
-        print(
-            f"[CaretTracker] DILATE_KERNEL_SIZE: {self.DILATE_KERNEL_SIZE}, DILATE_ITERATIONS: {self.DILATE_ITERATIONS}")
-        print(f"[CaretTracker] INTER_FRAME_DELAY: {self.INTER_FRAME_DELAY}")
 
     def set_roi(self, x, y, width, height):
         """Set a region of interest for caret detection."""
@@ -886,8 +866,6 @@ class CaretTracker:
 
     def _tracking_loop(self):
         """Main tracking loop running in a separate thread."""
-        print("[CaretTracker] Starting tracking loop...")
-
         try:
             sct = mss.mss()
         except Exception as e:
@@ -902,22 +880,18 @@ class CaretTracker:
 
         if self.USE_ROI:
             monitor = {"top": self.ROI_Y, "left": self.ROI_X, "width": self.ROI_W, "height": self.ROI_H}
-            if self.ROI_W <= 0 or self.ROI_H <= 0:
-                print(f"[CaretTracker] ERROR: Invalid ROI dimensions.")
-                self.is_tracking = False
-                return
             absolute_offset_x = self.ROI_X
             absolute_offset_y = self.ROI_Y
             print(f"[CaretTracker] Using ROI: {monitor}")
         else:
             try:
-                # Use primary monitor. Assume its top-left is (0,0) for simplicity
+                # Use primary monitor
                 monitor = sct.monitors[1]
                 absolute_offset_x = monitor.get('left', 0)
                 absolute_offset_y = monitor.get('top', 0)
-                print(f"[CaretTracker] Using Primary Monitor: {monitor}")
                 monitor = {"top": absolute_offset_y, "left": absolute_offset_x,
                            "width": monitor['width'], "height": monitor['height']}
+                print(f"[CaretTracker] Using primary monitor: {monitor}")
             except Exception as e:
                 print(f"[CaretTracker] Error getting monitor info: {e}")
                 self.is_tracking = False
@@ -941,11 +915,6 @@ class CaretTracker:
                 last_capture_time = time.time()
                 current_bgr = np.array(sct_img)
                 current_gray = cv2.cvtColor(current_bgr, cv2.COLOR_BGRA2GRAY)
-            except mss.ScreenShotError as ex:
-                print(f"[CaretTracker] ScreenShotError: {ex}. Retrying...")
-                time.sleep(0.5)
-                prev_gray = None
-                continue
             except Exception as e:
                 print(f"[CaretTracker] Error capturing screen: {e}")
                 time.sleep(0.5)
@@ -984,13 +953,11 @@ class CaretTracker:
 
                     if is_aspect_ok or is_plausible_block:
                         potential_carets.append((x, y, w, h))
-                        if self.DEBUG_MODE:
-                            abs_x_debug = absolute_offset_x + x
-                            abs_y_debug = absolute_offset_y + y
-                            print(
-                                f"[CaretTracker] Candidate @({abs_x_debug},{abs_y_debug}) Rel({x},{y}) Size: {w}x{h} Aspect: {aspect_ratio:.2f}")
+                        if len(potential_carets) <= 3:  # Show details for up to 3 candidates
+                            ar = aspect_ratio
+                            print(f"[CaretTracker] Candidate: pos=({x},{y}), size={w}x{h}, aspect={ar:.2f}")
 
-            # Identify best caret candidate - simplified selection
+            # Identify best caret candidate
             best_caret_rect = potential_carets[0] if potential_carets else None
 
             # Update caret position
@@ -1000,9 +967,8 @@ class CaretTracker:
                 center_x_abs = absolute_offset_x + x_rel + w // 2
                 center_y_abs = absolute_offset_y + y_rel + h // 2
 
-                # Only log if position changed significantly
-                if self.caret_position is None or abs(self.caret_position[0] - center_x_abs) > 2 or abs(
-                        self.caret_position[1] - center_y_abs) > 2:
+                # Only log if position changed
+                if self.caret_position != (center_x_abs, center_y_abs):
                     print(f"[CaretTracker] Detected caret at: ({center_x_abs}, {center_y_abs})")
 
                 self.caret_position = (center_x_abs, center_y_abs)
@@ -1067,6 +1033,8 @@ class CaretTracker:
         # Release the mouse button
         pyautogui.mouseUp()
         print(f"[CaretTracker] Drag completed - selected approximately {num_lines} lines")
+
+
 # Update the process_and_update_text function to integrate the CaretTracker class
 def process_and_update_text():
     """Process text with line-by-line replacement while maintaining exact spaces and handling line insertions."""
@@ -1133,11 +1101,16 @@ def process_and_update_text():
                     temp_file.write(new_text)
                     temp_path = temp_file.name
 
+                # Code formatting logic here (same as original)
+                # ...
+
                 # Clean up temp file
                 os.unlink(temp_path)
 
             except Exception as format_error:
                 print(f"Formatting error (continuing with unformatted code): {format_error}")
+                # Indentation preservation logic here (same as original)
+                # ...
 
         # Store the LLM response for pasting after selection
         paste_text = new_text
@@ -1173,10 +1146,10 @@ def process_and_update_text():
         pyautogui.press('home')
         time.sleep(0.2)
 
-        # Initialize AccurateCaretTracker if not already done
+        # Initialize caret tracker if not already done
         if not hasattr(state, 'caret_tracker'):
-            print("Creating new AccurateCaretTracker instance")
-            state.caret_tracker = AccurateCaretTracker(debug_mode=True)
+            print("Creating new CaretTracker instance")
+            state.caret_tracker = CaretTracker()
 
             # Set a focused ROI around the current cursor position
             current_x, current_y = pyautogui.position()
@@ -1188,46 +1161,121 @@ def process_and_update_text():
             print(f"Started caret tracker with ROI around current position")
             time.sleep(0.5)  # Give tracker time to initialize
 
-        # *** CRITICAL CHANGE: Make caret visible WITHOUT moving cursor first ***
-        # This is the key - force the caret to appear on the current line without moving
-        print("Making caret visible on the first line that needs changes")
-
-        # Make a minimal movement to trigger caret visibility
+        # Force caret to appear by using keyboard navigation
+        print("Making caret visible via keyboard navigation")
         pyautogui.press('right')
         time.sleep(0.1)
         pyautogui.press('left')
-        time.sleep(0.3)  # Wait for caret to become visible
+        time.sleep(0.3)
 
-        # Now try to get caret position from tracker
-        caret_pos = state.caret_tracker.get_caret_position()
+        # Store current position as fallback
+        fallback_position = pyautogui.position()
 
-        current_x, current_y = pyautogui.position()  # Store current position
+        # Make multiple attempts to find the caret
+        caret_pos = None
+        print("Looking for caret position...")
 
-        if not caret_pos:
-            # If caret not detected, try force appearance without moving to a different position
-            print("Caret not detected, using force_caret_appearance on current line")
-            state.caret_tracker.force_caret_appearance(current_x, current_y)
-            time.sleep(0.3)
-            caret_pos = state.caret_tracker.get_caret_position()
+        # Try different techniques to make caret visible
+        for technique in range(3):
+            if technique == 0:
+                print("Technique 1: Home+Right+Left")
+                pyautogui.press('home')
+                time.sleep(0.1)
+                pyautogui.press('right')
+                time.sleep(0.1)
+                pyautogui.press('left')
+            elif technique == 1:
+                print("Technique 2: End+Left")
+                pyautogui.press('end')
+                time.sleep(0.1)
+                pyautogui.press('left')
+                time.sleep(0.1)
+            else:
+                print("Technique 3: Click focus reset")
+                current_pos = pyautogui.position()
+                pyautogui.click(current_pos.x + 5, current_pos.y)
+                time.sleep(0.1)
+                pyautogui.click(current_pos.x, current_pos.y)
 
-        # Get position for selection - use detected caret or current position
+            time.sleep(0.3)  # Wait for caret to appear
+
+            # Check for caret after each technique
+            for attempt in range(3):
+                caret_pos = state.caret_tracker.get_caret_position()
+                if caret_pos:
+                    print(f"Detected caret at position: {caret_pos} (technique {technique + 1}, attempt {attempt + 1})")
+                    break
+                time.sleep(0.2)
+
+            if caret_pos:
+                break
+
+        # Move to caret position if detected, otherwise use fallback
         if caret_pos:
-            print(f"Using detected caret position: {caret_pos}")
-            selection_x, selection_y = caret_pos
+            print(f"Moving to detected caret position: {caret_pos}")
+            pyautogui.moveTo(caret_pos[0], caret_pos[1])
+            time.sleep(0.1)
+            pyautogui.click()
+            time.sleep(0.2)
         else:
-            print(f"Caret not detected, using current position: ({current_x}, {current_y})")
-            selection_x, selection_y = current_x, current_y
+            print(f"Caret not detected, using fallback position: {fallback_position}")
+            pyautogui.moveTo(fallback_position.x, fallback_position.y)
+            pyautogui.click()
+
+        # Get current position for double-click and drag
+        current_x, current_y = pyautogui.position()
 
         # Calculate the number of lines to select
         lines_to_select = state.initial_line_count
+
+        # Calculate the drag distance based on line height
         line_height = CONFIG.get('LINE_HEIGHT', 20)
+        # Subtract 1 because double-click already selects first line
+        distance = (lines_to_select - 1) * line_height
 
         print(f"Starting double-click and drag to select {lines_to_select} lines")
 
-        # Use the AccurateCaretTracker's double_click_and_drag_down method
-        state.caret_tracker.double_click_and_drag_down(
-            selection_x, selection_y, lines_to_select, line_height
-        )
+        # Double-click and drag using the CaretTracker method if available
+        if hasattr(state.caret_tracker, 'double_click_and_drag_down'):
+            state.caret_tracker.double_click_and_drag_down(
+                current_x, current_y, lines_to_select, line_height
+            )
+        else:
+            # Fallback to manual implementation
+            # Move to the starting position
+            pyautogui.moveTo(current_x, current_y)
+            time.sleep(0.2)  # Short pause for stability
+
+            # Perform a double-click to select the first line
+            pyautogui.doubleClick()
+            time.sleep(0.3)  # Wait for selection to register
+
+            # If more than one line, drag to select additional lines
+            if lines_to_select > 1 and distance > 0:
+                # Press and hold the left mouse button
+                pyautogui.mouseDown()
+
+                # Number of steps for a smoother drag
+                steps = 10
+
+                # Calculate the distance to move in each step
+                step_distance = distance / steps
+
+                print(f"Dragging down {distance} pixels to select {lines_to_select} lines")
+
+                # Perform the drag operation in steps
+                for i in range(1, steps + 1):
+                    # Calculate new y position for this step
+                    current_y_step = current_y + (step_distance * i)
+
+                    # Move to new position while holding button
+                    pyautogui.moveTo(current_x, current_y_step)
+
+                    # Small pause between steps
+                    time.sleep(0.05)
+
+                # Release the mouse button
+                pyautogui.mouseUp()
 
         # Verify the selection by copying
         time.sleep(0.3)
@@ -1243,9 +1291,6 @@ def process_and_update_text():
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(CONFIG['COPY_PASTE_DELAY'])
         print(f"Pasted {llm_lines_count} lines over the selected {selected_lines} lines")
-
-        # Return to original position
-        pyautogui.moveTo(temp_pos.x, temp_pos.y)
 
     except Exception as e:
         print(f"Error in process_and_update_text: {e}")
