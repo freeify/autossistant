@@ -39,7 +39,7 @@ else:
 
 # Configuration
 CONFIG = {
-
+    'API_KEY': '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',
     'CLICK_DELAY': 0.1,
     'COPY_PASTE_DELAY': 0.2,
     'LINE_HEIGHT': 20
