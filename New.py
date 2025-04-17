@@ -775,20 +775,36 @@ class CodeProcessor:
                 pyautogui.position().y
             )
 
-            if not block_text:
-                self.log("Could not detect code block using traditional methods")
-                return False
+            # If we couldn't detect the block properly or need to ensure exactly the right number of lines
+            if not block_text or target_lines is not None:
+                # Use OCR to find and select the text
+                selected_text, match = self.ocr_selector.select_code_block_with_ocr(
+                    search_text,
+                    target_lines if target_lines is not None else (end - start + 1)
+                )
 
-            # Calculate the number of lines in the detected block
-            lines_in_block = end - start + 1
-            self.log(f"Detected code block with {lines_in_block} lines ({language}, {block_type})")
+                if not selected_text:
+                    self.log(f"Couldn't find text matching '{search_text}'")
+                    return False
 
-            # Use the first line of the detected block for better OCR matching if no search_text provided
-            lines = block_text.splitlines()
-            if not search_text and lines:
-                search_text = lines[0].strip()
-                self.log(f"Using first line of block as search text: '{search_text}'")
+                # Process the selected text with the LLM
+                processed_text = self.process_code_with_llm(
+                    selected_text,
+                    input_text,
+                    language or detect_language(selected_text),
+                    block_type or "unknown"
+                )
 
+                # Paste the processed text (selection is already active)
+                pyperclip.copy(processed_text)
+                time.sleep(0.2)
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(CONFIG['COPY_PASTE_DELAY'])
+                self.log(f"Replaced code block with processed text")
+
+                return True
+
+            # If we have block_text from traditional detection, use it
             # Now select the code block using keyboard shortcuts
             # The cursor should already be at the position we need
 
@@ -796,9 +812,12 @@ class CodeProcessor:
             pyautogui.press('home')  # Move to beginning of line
             time.sleep(0.2)
 
+            # Calculate number of lines to select
+            lines_to_select = end - start + 1
+
             # Use Shift+Down to select the required number of lines
             pyautogui.keyDown('shift')
-            for _ in range(lines_in_block - 1):  # -1 because current line counts as 1
+            for _ in range(lines_to_select - 1):  # -1 because current line counts as 1
                 pyautogui.press('down')
                 time.sleep(0.05)
             pyautogui.press('end')  # Select to end of last line
@@ -809,20 +828,7 @@ class CodeProcessor:
             time.sleep(0.2)
             selected_text = pyperclip.paste()
             selected_lines = len(selected_text.splitlines())
-            self.log(f"Selected {selected_lines} lines (expected {lines_in_block})")
-
-            # If keyboard selection failed or didn't select the expected number of lines,
-            # fall back to OCR-based selection
-            if abs(selected_lines - lines_in_block) > 1:
-                self.log("Traditional selection didn't match expected lines, falling back to OCR")
-                selected_text, match = self.ocr_selector.select_code_block_with_ocr(
-                    search_text,
-                    lines_in_block
-                )
-
-                if not selected_text:
-                    self.log(f"OCR couldn't find text matching '{search_text}'")
-                    return False
+            self.log(f"Selected {selected_lines} lines (expected {lines_to_select})")
 
             # Process the selected text with the LLM
             processed_text = self.process_code_with_llm(
