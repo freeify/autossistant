@@ -875,7 +875,6 @@ class CodeProcessor:
                 language,
                 block_type
             )
-
             # Paste the processed text
             pyperclip.copy(processed_text)
             time.sleep(0.2)
