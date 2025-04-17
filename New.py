@@ -764,7 +764,7 @@ class CodeProcessor:
         Use OCR to find the search_text, select lines, and process with LLM.
 
         Args:
-            search_text: Text to search for on screen as starting point (will be ignored in favor of detected first line)
+            search_text: Text to search for on screen as starting point
             input_text: User's instruction for code modification
             target_lines: Optional number of lines to select (if None, will try to detect)
         """
@@ -783,60 +783,16 @@ class CodeProcessor:
             lines_in_block = end - start + 1
             self.log(f"Detected code block with {lines_in_block} lines ({language}, {block_type})")
 
-            # Always use the first line of the detected block for better OCR matching
-            # This is the key change - we always use the first line of the code block detected
-            # rather than using the passed-in search_text or the copied text
+            # Use the first line of the detected block for better OCR matching if no search_text provided
             lines = block_text.splitlines()
-            if lines:
-                # Override any passed-in search_text with the first non-empty line of the block
-                for line in lines:
-                    if line.strip():
-                        search_text = line.strip()
-                        self.log(f"Using first non-empty line of block as search text: '{search_text}'")
-                        break
+            if not search_text and lines:
+                search_text = lines[0].strip()
+                self.log(f"Using first line of block as search text: '{search_text}'")
 
-            if not search_text:
-                self.log("Could not find suitable text in first line of code block")
-                return False
+            # Now select the code block using keyboard shortcuts
+            # The cursor should already be at the position we need
 
-            # Detect current cursor position
-            current_line_idx = None
-            cursor_pos = pyautogui.position()
-
-            # Try to go to first line of the code block
-            # First store current position
-            current_pos = pyautogui.position()
-
-            # Navigate to the start line using keyboard shortcuts
-            # First go to beginning of current line
-            pyautogui.press('home')
-            time.sleep(0.1)
-
-            # Determine how many lines up we need to go to reach the start
-            # Get current line text
-            pyautogui.keyDown('shift')
-            pyautogui.press('end')
-            pyautogui.keyUp('shift')
-            pyautogui.hotkey('ctrl', 'c')
-            time.sleep(0.2)
-            current_line_text = pyperclip.paste()
-
-            # Compare with our block lines to find current position in block
-            current_line_idx = None
-            for i, line in enumerate(lines):
-                if line.strip() == current_line_text.strip():
-                    current_line_idx = i
-                    break
-
-            # If we couldn't determine current position, assume we need to go to beginning
-            lines_to_move_up = current_line_idx if current_line_idx is not None else 0
-
-            # Go up to the first line of the block
-            for _ in range(lines_to_move_up):
-                pyautogui.press('up')
-                time.sleep(0.05)
-
-            # Now we should be at the first line, select the whole block
+            # First, select the current line with keyboard shortcuts
             pyautogui.press('home')  # Move to beginning of line
             time.sleep(0.2)
 
@@ -875,6 +831,7 @@ class CodeProcessor:
                 language,
                 block_type
             )
+
             # Paste the processed text
             pyperclip.copy(processed_text)
             time.sleep(0.2)
@@ -888,6 +845,7 @@ class CodeProcessor:
             self.log(f"Error in select_and_process_code_block_with_ocr: {e}")
             traceback.print_exc()
             return False
+
 
 # --------------------- Overlay Application --------------------- #
 
