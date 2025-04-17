@@ -17,7 +17,7 @@ import subprocess
 CONFIG = {
     'SERVER_HOST': '127.0.0.1',
     'SERVER_PORT': 66439,
-    'API_KEY': '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',
+
     # Delay in seconds between clicks, adjust based on system performance
     'CLICK_DELAY': 0.1,
     'COPY_PASTE_DELAY': 0.2,
