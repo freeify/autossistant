@@ -10,7 +10,6 @@ image_path = r"C:\Users\EphraimMataranyika\Desktop\Capture_20250509_1135\window_
 
 # Load the image
 image = cv2.imread(image_path)
-
 # Check if image was loaded successfully
 if image is None:
     print("Error: Could not load image. Please check the file path.")
