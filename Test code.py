@@ -9,7 +9,6 @@ DELAY = 0.1  # Delay for better reliability
 
 
 def switch_to_editor(wait_time: int = 3) -> None:
-    """Give the user time to switch to the editor window."""
     print(f"Please switch to your editor window. Starting in {wait_time} seconds...")
     time.sleep(wait_time)
     print("Starting analysis...")

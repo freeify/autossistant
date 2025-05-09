@@ -42,12 +42,14 @@ else:
 
 # Configuration
 CONFIG = {
-    'API_KEY': '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',
+    'API_KEY': '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',
     'CLICK_DELAY': 0.1,
     'COPY_PASTE_DELAY': 0.2,
     'LINE_HEIGHT': 20,
     'OCR_CONFIDENCE': 70,
-    'TESSERACT_PATH': r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    'TESSERACT_PATH': r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+    'PARAGRAPH_CHAR_THRESHOLD': 100,  # Min characters for a paragraph
+    'PARAGRAPH_DETECTION_LINES': 10  # Number of lines to analyze for paragraph detection
 }
 
 # Set path to Tesseract
@@ -64,6 +66,7 @@ class State:
         self.starting_line_number = None
         self.out = None  # Current code block content
         self.exit_flag = False  # Flag to indicate if ESC has been pressed
+        self.content_type = "code"  # Default content type: "code" or "text"
 
 
 state = State()
@@ -293,13 +296,79 @@ class OCRTextSelector:
         pyautogui.click()
         time.sleep(0.05)
 
-    def select_text_lines(self, start_x, start_y, target_lines, line_height=None):
-        """Select a specific number of lines starting from the given position."""
+    def select_text_block(self, start_x, start_y, is_paragraph=False):
+        """
+        Select a text block (paragraph) using appropriate selection techniques.
+
+        Args:
+            start_x, start_y: Coordinates to start selection
+            is_paragraph: Whether we're selecting a paragraph (vs code)
+
+        Returns:
+            Selected text and end y-position
+        """
+        try:
+            # Move to the starting position
+            pyautogui.moveTo(start_x, start_y, duration=0.05)
+
+            # For paragraphs, we can use triple-click which often selects the whole paragraph
+            if is_paragraph:
+                # Triple click to select paragraph
+                pyautogui.click(clicks=3, interval=0.05)
+                time.sleep(0.1)
+
+                # Copy the selection to check what we got
+                pyautogui.hotkey('ctrl', 'c')
+                selected_text = pyperclip.paste()
+
+                # If we didn't get anything, fall back to other methods
+                if not selected_text.strip():
+                    self.log("Triple-click selection failed, trying alternative methods")
+                    return self.select_text_lines(start_x, start_y, estimate_lines=True)
+
+                end_pos = pyautogui.position()
+                return selected_text, end_pos[1]
+            else:
+                # For code blocks, use the existing line-by-line selection
+                return self.select_text_lines(start_x, start_y, estimate_lines=True)
+        except Exception as e:
+            self.log(f"Error in select_text_block: {str(e)}")
+            traceback.print_exc()
+            return "", start_y
+
+    def select_text_lines(self, start_x, start_y, target_lines=None, line_height=None, estimate_lines=False):
+        """
+        Select a specific number of lines starting from the given position.
+
+        Args:
+            start_x, start_y: Coordinates to start selection
+            target_lines: Number of lines to select (if None and estimate_lines is True, we'll try to detect)
+            line_height: Height of each line in pixels
+            estimate_lines: Whether to attempt to estimate the number of lines in the block
+        """
         if line_height is None:
             line_height = CONFIG['LINE_HEIGHT']
 
         # Ensure we're at the beginning of the line first
         self.ensure_beginning_of_line(start_x, start_y)
+
+        if estimate_lines and target_lines is None:
+            # Try to estimate by getting current block
+            full_text, current_line, lines = self.get_text_and_line_number(start_x, start_y)
+
+            if state.content_type == "text":
+                # For text content, get paragraph boundaries
+                start_idx, end_idx = find_paragraph_boundaries(lines, current_line)
+                target_lines = end_idx - start_idx + 1
+                self.log(f"Estimated paragraph has {target_lines} lines")
+            else:
+                # For code content, estimate block size (assuming it's similar to preview_block)
+                # This is a simplified version - the actual detection would use find_block_boundaries
+                target_lines = min(10, len(lines) - current_line)  # Default fallback
+
+        # If we still don't have target_lines, use a reasonable default
+        if target_lines is None:
+            target_lines = 5  # Reasonable default for a small paragraph
 
         # Double-click to select first word
         pyautogui.doubleClick()
@@ -377,8 +446,15 @@ class OCRTextSelector:
 
         return final_text, pyautogui.position()[1]
 
-    def select_code_block_with_ocr(self, search_text, target_lines, image_path=None):
-        """Use OCR to find text, then select a specific number of lines."""
+    def select_block_with_ocr(self, search_text, target_lines=None, image_path=None):
+        """
+        Use OCR to find text, then select a specific number of lines or paragraph.
+
+        Args:
+            search_text: Text to search for on screen
+            target_lines: Optional number of lines to select (if None, will try to detect)
+            image_path: Path to an image file to analyze instead of taking a screenshot
+        """
         # Find the text using OCR
         match, estimated_line_height = self.find_text_on_screen(search_text, image_path=image_path)
 
@@ -391,19 +467,27 @@ class OCRTextSelector:
             self.log(f"Starting selection at position ({start_x}, {start_y})")
             self.log(f"Estimated line height: {estimated_line_height:.2f} pixels")
 
-            # Select the text
-            selected_text, end_y = self.select_text_lines(
-                start_x,
-                start_y,
-                target_lines,
-                line_height=max(estimated_line_height, 15)  # Use at least 15px as minimum
-            )
+            # Use the appropriate selection method based on content type
+            if state.content_type == "text":
+                # For text/paragraphs, use the paragraph selection method
+                selected_text, end_y = self.select_text_block(
+                    start_x,
+                    start_y,
+                    is_paragraph=True
+                )
+            else:
+                # For code, use the line-by-line selection method
+                selected_text, end_y = self.select_text_lines(
+                    start_x,
+                    start_y,
+                    target_lines,
+                    line_height=max(estimated_line_height, 15)  # Use at least 15px as minimum
+                )
 
             return selected_text, match
         else:
             self.log(f"Couldn't find text matching '{search_text}'")
             return None, None
-
 
 # --------------------- Language and Block Detection --------------------- #
 
@@ -432,6 +516,8 @@ def detect_language(code: str) -> str:
     return best_match[0] if best_match[1] > 0 else 'unknown'
 
 
+
+
 def get_block_info(language: str):
     """Get language-specific block patterns."""
     patterns = {
@@ -451,6 +537,11 @@ def get_block_info(language: str):
             'keywords': ['public', 'private', 'protected', 'class', 'interface', 'void', 'static', 'final', 'abstract'],
             'method_pattern': r'\b\w+\s+\w+\([^)]*\)\s*{'  # Pattern to detect method declarations
         },
+        'text': {
+            'indent_based': False,
+            'block_start': r'^.*$',  # Any line can start a text block
+            'keywords': []
+        },
         'unknown': {
             'indent_based': False,
             'block_start': r'^.*[{:]$',
@@ -460,14 +551,198 @@ def get_block_info(language: str):
     return patterns.get(language, patterns['unknown'])
 
 
-def find_block_boundaries(lines, cursor_line, language):
-    """Find the start and end of the current code block."""
-    patterns = get_block_info(language)
-    print(f"Language detected: {language}")
+def find_paragraph_boundaries(lines, cursor_line):
+    """
+    Find the start and end of the current paragraph with enhanced detection logic.
+    A paragraph is defined as consecutive non-empty lines that share similar formatting.
+    """
+    if not lines or cursor_line >= len(lines):
+        return 0, 0
+
+    # Start from cursor position
+    start = cursor_line
+    end = cursor_line
+
+    # Check if we're on an empty line
+    if not lines[cursor_line].strip():
+        # If we're on an empty line, find the nearest non-empty paragraph
+        # First look forward
+        forward_start = cursor_line
+        while forward_start < len(lines) - 1:
+            forward_start += 1
+            if lines[forward_start].strip():
+                break
+
+        # Then look backward
+        backward_start = cursor_line
+        while backward_start > 0:
+            backward_start -= 1
+            if lines[backward_start].strip():
+                break
+
+        # Choose the closest non-empty line
+        if forward_start >= len(lines) or not lines[forward_start].strip():
+            forward_distance = float('inf')
+        else:
+            forward_distance = forward_start - cursor_line
+
+        if backward_start < 0 or not lines[backward_start].strip():
+            backward_distance = float('inf')
+        else:
+            backward_distance = cursor_line - backward_start
+
+        # Set cursor_line to the closest non-empty line
+        if forward_distance < backward_distance:
+            cursor_line = forward_start
+        else:
+            cursor_line = backward_start
+
+        # If both searches failed, return the original cursor line
+        if cursor_line == forward_start and forward_distance == float('inf') or \
+                cursor_line == backward_start and backward_distance == float('inf'):
+            return start, end
+
+        # Update start and end to the new cursor line
+        start = cursor_line
+        end = cursor_line
+
+    # Detect indentation of the current line
+    current_indent = len(lines[cursor_line]) - len(lines[cursor_line].lstrip())
+    indent_threshold = 4  # Allow a small variation in indentation
+
+    # Go backward to find paragraph start (empty line or significant indent change)
+    while start > 0:
+        prev_line = lines[start - 1]
+
+        # Stop if we hit an empty line
+        if not prev_line.strip():
+            break
+
+        # Check for significant indentation change
+        if prev_line.strip():
+            prev_indent = len(prev_line) - len(prev_line.lstrip())
+            if abs(prev_indent - current_indent) > indent_threshold:
+                # Indent change might indicate a new paragraph
+                # But first check if this is a list item or special formatting
+                if not (prev_line.lstrip().startswith(('-', '*', '•', '1.', '2.', '3.')) or
+                        prev_line.lstrip().startswith(('>', '#'))):
+                    break
+
+        # Check for paragraph separators like headers or horizontal rules
+        if prev_line.strip().startswith(('#', '---', '===', '***')):
+            break
+
+        start -= 1
+
+    # Go forward to find paragraph end (empty line or significant indent change)
+    while end < len(lines) - 1:
+        next_line = lines[end + 1]
+
+        # Stop if we hit an empty line
+        if not next_line.strip():
+            break
+
+        # Check for significant indentation change
+        if next_line.strip():
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if abs(next_indent - current_indent) > indent_threshold:
+                # Indent change might indicate a new paragraph
+                # But first check if this is a list item or special formatting
+                if not (next_line.lstrip().startswith(('-', '*', '•', '1.', '2.', '3.')) or
+                        next_line.lstrip().startswith(('>', '#'))):
+                    break
+
+        # Check for paragraph separators like headers
+        if next_line.strip().startswith(('#', '---', '===', '***')):
+            break
+
+        end += 1
+
+    return start, end
+
+
+# Enhanced function to detect if content looks like text rather than code
+def is_text_content(content):
+    """
+    Determine if content is plain text (non-code).
+    Returns True if the content appears to be prose text rather than code.
+    """
+    # Get a sample of the first few lines
+    lines = content.split('\n')
+    lines_to_check = min(CONFIG['PARAGRAPH_DETECTION_LINES'], len(lines))
+    sample = '\n'.join(lines[:lines_to_check])
+
+    # Indicators for code
+    code_patterns = [
+        r'^\s*(def|class|if|elif|else|for|while|try|except|with)\s+.*:',  # Python
+        r'^\s*(function|class|if|else|for|while|try|catch)\s+.*{',  # JavaScript
+        r'^\s*(public|private|protected|class|interface|void|static)',  # Java
+        r'^\s*import\s+',  # Import statements
+        r'^\s*#include',  # C/C++
+        r'^\s*[<>{};]$',  # Common code syntax
+        r'^\s*//|^\s*/\*|\*/$',  # Comments
+        r'^\s*[a-zA-Z0-9_]+\s*\(',  # Function calls
+    ]
+
+    # Indicators for markdown/text
+    text_patterns = [
+        r'^\s*#{1,6}\s+\w',  # Markdown headers
+        r'^\s*[-*+]\s+\w',  # Markdown lists
+        r'^\s*\d+\.\s+\w',  # Numbered lists
+        r'^\s*>\s+\w',  # Blockquotes
+        r'^\s*\[.*\]\(.*\)',  # Markdown links
+    ]
+
+    # Count code indicators
+    code_indicators = sum(1 for pattern in code_patterns if re.search(pattern, sample, re.MULTILINE))
+
+    # Count text/markdown indicators
+    text_indicators = sum(1 for pattern in text_patterns if re.search(pattern, sample, re.MULTILINE))
+
+    # Count long lines that likely indicate prose paragraphs
+    long_lines = sum(1 for line in lines[:lines_to_check] if len(line.strip()) > CONFIG['PARAGRAPH_CHAR_THRESHOLD'])
+
+    # Check punctuation density
+    punctuation_count = sum(1 for char in sample if char in '.,:;?!')
+    char_count = len(sample)
+    punctuation_ratio = punctuation_count / max(1, char_count)
+
+    # Sentence-like structures indicate text
+    sentences = re.findall(r'[.!?]\s+[A-Z]', sample)
+
+    # Check for quotation marks which are common in text
+    quotes = re.findall(r'["\'"].*?["\'"]', sample)
+
+    # Calculate results - more sophisticated approach
+    if code_indicators >= 3:
+        # Strong evidence of code
+        return False
+    elif text_indicators >= 2 or long_lines >= 2 or len(sentences) >= 2 or len(quotes) >= 2:
+        # Strong evidence of text
+        return True
+    elif punctuation_ratio > 0.05 and code_indicators < 2:
+        # High punctuation density suggests text
+        return True
+    else:
+        # Default to code if uncertain
+        return False
+def find_block_boundaries(lines, cursor_line, content_type="code"):
+    """Find the start and end of the current block (code or text)."""
+    print(f"Content type detected: {content_type}")
 
     # Handle empty file or invalid cursor position
     if not lines or cursor_line >= len(lines):
         return 0, 0, 'unknown'
+
+    # For text content, find paragraph boundaries
+    if content_type == "text":
+        start, end = find_paragraph_boundaries(lines, cursor_line)
+        return start, end, 'paragraph'
+
+    # Otherwise, proceed with code block detection
+    language = detect_language('\n'.join(lines))
+    patterns = get_block_info(language)
+    print(f"Language detected: {language}")
 
     cursor_indent = len(lines[cursor_line]) - len(lines[cursor_line].lstrip())
 
@@ -582,8 +857,8 @@ def find_block_boundaries(lines, cursor_line, language):
 
 # --------------------- Code Processing Class --------------------- #
 
-class CodeProcessor:
-    """Class that handles code block selection and processing using OCR."""
+class ContentProcessor:
+    """Class that handles code/text block selection and processing using OCR."""
 
     def __init__(self, api_key=None, debug=True):
         self.debug = debug
@@ -621,10 +896,7 @@ class CodeProcessor:
         time.sleep(CONFIG['COPY_PASTE_DELAY'])
         pyautogui.hotkey('ctrl', 'c')  # Copy
         full_text = pyperclip.paste()
-
-        # Cancel the selection to return to where we were
-        pyautogui.press('escape')
-        time.sleep(CONFIG['CLICK_DELAY'])
+        pyautogui.press('escape')  # Cancel selection
 
         # Find the line number by matching the current line
         lines = full_text.splitlines()
@@ -654,17 +926,11 @@ class CodeProcessor:
 
         return full_text, line_number, lines
 
-    def preview_code_block(self, x, y):
-        """Preview the code block at the current position without selecting it."""
+    def preview_block(self, x, y):
+        """Preview the content block (code or text) at the current position without selecting it."""
         try:
             # Store initial cursor position
             initial_pos = pyautogui.position()
-
-            # Get all text in editor
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(CONFIG['COPY_PASTE_DELAY'])
-            pyautogui.hotkey('ctrl', 'c')
-            full_text = pyperclip.paste()
 
             # Return to where we were (press escape to deselect all)
             pyautogui.press('escape')
@@ -680,6 +946,13 @@ class CodeProcessor:
             pyautogui.hotkey('ctrl', 'c')
             current_line = pyperclip.paste()
 
+            # Get all text in editor
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(CONFIG['COPY_PASTE_DELAY'])
+            pyautogui.hotkey('ctrl', 'c')
+            full_text = pyperclip.paste()
+            pyautogui.press('escape')  # Cancel selection
+
             # Find line number
             lines = full_text.splitlines()
             cursor_line = 0
@@ -688,9 +961,18 @@ class CodeProcessor:
                     cursor_line = i
                     break
 
-            # Detect language and get block boundaries
-            language = detect_language(full_text)
-            start, end, block_type = find_block_boundaries(lines, cursor_line, language)
+            # Determine if this is code or text content
+            state.content_type = "text" if is_text_content(full_text) else "code"
+
+            # Get block boundaries based on content type
+            if state.content_type == "code":
+                # Detect language and get block boundaries
+                language = detect_language(full_text)
+                start, end, block_type = find_block_boundaries(lines, cursor_line, "code")
+            else:
+                # For text, use paragraph detection
+                start, end, block_type = find_block_boundaries(lines, cursor_line, "text")
+                language = "text"
 
             # Store the starting line number in state
             state.starting_line_number = start
@@ -708,7 +990,7 @@ class CodeProcessor:
             # Return to initial cursor position
             pyautogui.moveTo(initial_pos.x, initial_pos.y)
 
-            self.log(f"\nPreviewed block (starting at line {start}):")
+            self.log(f"\nPreviewed {state.content_type} block (starting at line {start}):")
             self.log("-" * 40)
             self.log(block_text)
             self.log("-" * 40)
@@ -716,26 +998,39 @@ class CodeProcessor:
             return block_text, start, end, language, block_type
 
         except Exception as e:
-            self.log(f"\nError in preview_code_block: {str(e)}")
+            self.log(f"\nError in preview_block: {str(e)}")
+            traceback.print_exc()
             return None, None, None, None, None
 
-    def process_code_with_llm(self, code_block, input_text, language, block_type):
-        """Process code block with LLM using both the code and user input."""
+    def process_content_with_llm(self, block_content, input_text, content_type, language="", block_type=""):
+        """Process content block with LLM using both the content and user input."""
         try:
             client = anthropic.Anthropic(api_key=self.api_key)
+
+            # Adjust prompt based on content type
+            if content_type == "code":
+                system_prompt = (
+                    f"Language: {language}\n"
+                    f"Block Type: {block_type}\n"
+                    f"Current code block:\n{block_content}\n\n"
+                    f"User requested modification: {input_text}\n\n"
+                    "Please modify the code block according to the user's request. "
+                    "Return only the modified code block with the same indentation, no explanations."
+                )
+            else:  # Text content
+                system_prompt = (
+                    f"Current text block:\n{block_content}\n\n"
+                    f"User requested modification: {input_text}\n\n"
+                    "Please modify the text block according to the user's request. "
+                    "Return only the modified text with the same formatting and structure, no explanations."
+                )
+
             response = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
-                    "content": (
-                        f"Language: {language}\n"
-                        f"Block Type: {block_type}\n"
-                        f"Current code block:\n{code_block}\n\n"
-                        f"User requested modification: {input_text}\n\n"
-                        "Please modify the code block according to the user's request. "
-                        "Return only the modified code block with the same indentation, no explanations."
-                    )
+                    "content": system_prompt
                 }]
             )
             processed_text = response.content[0].text
@@ -757,108 +1052,302 @@ class CodeProcessor:
             return processed_text
         except Exception as e:
             self.log(f"Error processing with LLM: {e}")
-            return code_block  # Return original code block on error
+            traceback.print_exc()
+            return block_content  # Return original content block on error
 
-    def select_and_process_code_block_with_ocr(self, search_text, input_text, target_lines=None):
+    def select_and_process_block(self, search_text, input_text, target_lines=None):
         """
         Use OCR to find the search_text, select lines, and process with LLM.
+        Works with both code and text content.
 
         Args:
             search_text: Text to search for on screen as starting point
-            input_text: User's instruction for code modification
+            input_text: User's instruction for modification
             target_lines: Optional number of lines to select (if None, will try to detect)
         """
         try:
-            # First try to detect the code block with traditional methods to get language
-            block_text, start, end, language, block_type = self.preview_code_block(
+            # First try to detect the block with traditional methods
+            block_text, start, end, language, block_type = self.preview_block(
                 pyautogui.position().x,
                 pyautogui.position().y
             )
 
-            # If we couldn't detect the block properly or need to ensure exactly the right number of lines
-            if not block_text or target_lines is not None:
-                # Use OCR to find and select the text
-                selected_text, match = self.ocr_selector.select_code_block_with_ocr(
-                    search_text,
-                    target_lines if target_lines is not None else (end - start + 1)
-                )
+            if not block_text:
+                self.log("Could not detect any content block")
+                return False
 
-                if not selected_text:
-                    self.log(f"Couldn't find text matching '{search_text}'")
-                    return False
+            # Calculate the number of lines in the detected block
+            lines_in_block = end - start + 1
+            self.log(f"Detected {state.content_type} block with {lines_in_block} lines")
+            if state.content_type == "code":
+                self.log(f"Language: {language}, Block type: {block_type}")
 
-                # Process the selected text with the LLM
-                processed_text = self.process_code_with_llm(
-                    selected_text,
-                    input_text,
-                    language or detect_language(selected_text),
-                    block_type or "unknown"
-                )
+            # Find first non-empty line to use as search text
+            lines = block_text.splitlines()
+            if not lines:
+                self.log("Empty block detected")
+                return False
 
-                # Paste the processed text (selection is already active)
-                pyperclip.copy(processed_text)
-                time.sleep(0.2)
-                pyautogui.hotkey('ctrl', 'v')
-                time.sleep(CONFIG['COPY_PASTE_DELAY'])
-                self.log(f"Replaced code block with processed text")
+            # Find first non-empty line to use as search text
+            first_non_empty_line = None
+            for i, line in enumerate(lines):
+                if line.strip():
+                    first_non_empty_line = line.strip()
+                    self.log(f"Using line {i} as search text: '{first_non_empty_line}'")
+                    break
 
-                return True
+            if not first_non_empty_line:
+                self.log("Could not find suitable text in block")
+                return False
 
-            # If we have block_text from traditional detection, use it
-            # Now select the code block using keyboard shortcuts
-            # The cursor should already be at the position we need
+            # Override any passed-in search_text with the first non-empty line
+            search_text = first_non_empty_line
 
-            # First, select the current line with keyboard shortcuts
-            pyautogui.press('home')  # Move to beginning of line
-            time.sleep(0.2)
+            # Store the first line number for later reference
+            first_line_number = start
+            self.log(f"First line number of block: {first_line_number}")
 
-            # Calculate number of lines to select
-            lines_to_select = end - start + 1
+            # Store current cursor position before doing any navigation
+            original_cursor_position = pyautogui.position()
+            self.log(f"Original cursor position: {original_cursor_position}")
 
-            # Use Shift+Down to select the required number of lines
+            # First go to beginning of current line to get a reference point
+            pyautogui.press('home')
+            time.sleep(0.1)
+
+            # Get current line text to find our position within the block
             pyautogui.keyDown('shift')
-            for _ in range(lines_to_select - 1):  # -1 because current line counts as 1
+            pyautogui.press('end')
+            pyautogui.keyUp('shift')
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.2)
+            current_line_text = pyperclip.paste()
+
+            # Cancel the selection
+            pyautogui.press('escape')
+            time.sleep(0.1)
+
+            # Compare with our block lines to find our current position in the block
+            current_line_idx = None
+            for i, line in enumerate(lines):
+                if line.strip() == current_line_text.strip():
+                    current_line_idx = i
+                    self.log(f"Current position is at line {i} in the detected block")
+                    break
+
+            # Calculate how many lines we need to move to get to first line of block
+            if current_line_idx is None:
+                self.log("Couldn't match current line in block, using best guess")
+                # Make a best guess - assume we're somewhere in the middle and need to go up
+                # Try moving up a few lines to find the start
+                test_moves = min(5, len(lines) // 2)  # Don't move too far
+                for _ in range(test_moves):
+                    pyautogui.press('up')
+                    time.sleep(0.05)
+
+                    # Check if we found the first line
+                    pyautogui.press('home')
+                    pyautogui.keyDown('shift')
+                    pyautogui.press('end')
+                    pyautogui.keyUp('shift')
+                    pyautogui.hotkey('ctrl', 'c')
+                    time.sleep(0.2)
+                    test_line = pyperclip.paste()
+                    pyautogui.press('escape')
+
+                    if test_line.strip() == lines[0].strip():
+                        self.log(f"Found first line after moving up {_ + 1} lines")
+                        break
+            else:
+                # We know exactly where we are in the block
+                lines_to_move = -current_line_idx  # Negative means move up
+
+                # Move to the first line of the block
+                for _ in range(abs(lines_to_move)):
+                    if lines_to_move < 0:
+                        pyautogui.press('up')
+                    else:
+                        pyautogui.press('down')
+                    time.sleep(0.05)
+
+            # Now we should be at the first line, position at beginning of line
+            pyautogui.press('home')
+            time.sleep(0.1)
+
+            # Verify we're at the first line by getting the text
+            pyautogui.keyDown('shift')
+            pyautogui.press('end')
+            pyautogui.keyUp('shift')
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.2)
+            first_line_check = pyperclip.paste()
+            pyautogui.press('escape')  # Cancel selection
+
+            # Log what we found
+            self.log(f"First line check: '{first_line_check}'")
+            if lines[0].strip() == first_line_check.strip():
+                self.log("Successfully positioned at first line of block")
+            else:
+                self.log(f"WARNING: First line verification failed. Expected: '{lines[0]}', Got: '{first_line_check}'")
+
+                # Try OCR-based positioning as a fallback
+                self.log("Attempting OCR-based positioning as fallback")
+                ocr_text, match = self.ocr_selector.select_block_with_ocr(
+                    search_text,
+                    lines_in_block
+                )
+
+                if ocr_text:
+                    selected_text = ocr_text
+                    self.log("OCR-based selection successful")
+                else:
+                    self.log("OCR-based selection failed, continuing with best effort")
+
+                    # Try one more time to find the first line through relative navigation
+                    self.log("Trying additional relative navigation")
+
+                    # Move up a few more lines to see if we can find the beginning
+                    for i in range(5):
+                        pyautogui.press('up')
+                        time.sleep(0.05)
+
+                        # Check if we found the first line
+                        pyautogui.press('home')
+                        pyautogui.keyDown('shift')
+                        pyautogui.press('end')
+                        pyautogui.keyUp('shift')
+                        pyautogui.hotkey('ctrl', 'c')
+                        time.sleep(0.2)
+                        test_line = pyperclip.paste()
+                        pyautogui.press('escape')
+
+                        if test_line.strip() == lines[0].strip():
+                            self.log(f"Found first line after additional navigation")
+                            break
+
+            # Select the block now that we're at the beginning - use content-type specific method
+            # if state.content_type == "text":
+            #     # For text content, try triple-click first
+            #     pyautogui.click(clicks=3, interval=0.05)
+            #     time.sleep(0.1)
+
+            #     # Check if we got the right paragraph
+            #     pyautogui.hotkey('ctrl', 'c')
+            #     time.sleep(0.2)
+            #     selected_text = pyperclip.paste()
+            #     selected_lines = len(selected_text.splitlines())
+
+            #     # If the triple click didn't select the right number of lines, fall back to manual selection
+            #     if abs(selected_lines - lines_in_block) > 2:  # Allow some variance
+            #         self.log(f"Triple-click selected {selected_lines} lines, expected ~{lines_in_block}. Using manual selection.")
+            #         # Reset selection and use traditional method
+            #         pyautogui.press('escape')
+            #         time.sleep(0.1)
+            # else:
+            # Use traditional selection for code and fallback for text
+            pyautogui.press('home')  # Ensure we're at the beginning of line
+            time.sleep(0.1)
+            pyautogui.keyDown('shift')
+            for _ in range(lines_in_block - 1):
                 pyautogui.press('down')
-                time.sleep(0.05)
+                time.sleep(0.02)
             pyautogui.press('end')  # Select to end of last line
             pyautogui.keyUp('shift')
+            time.sleep(0.1)
 
-            # Verify the selection by copying
+            # Get the selected text
             pyautogui.hotkey('ctrl', 'c')
             time.sleep(0.2)
             selected_text = pyperclip.paste()
+
+            # Try triple-click selection if this is a text block and the normal selection didn't work well
+            if state.content_type == "text" and (len(selected_text.splitlines()) < lines_in_block * 0.8):
+                self.log("Text selection may have failed. Trying triple-click as alternative")
+
+                # Go back to the beginning of the block
+                pyautogui.press('escape')  # Cancel any selection
+                time.sleep(0.1)
+
+                # Move to the beginning of the first line
+                for _ in range(lines_in_block):
+                    pyautogui.press('up')
+                    time.sleep(0.02)
+                pyautogui.press('home')
+                time.sleep(0.1)
+
+                # Try triple click
+                pyautogui.click(clicks=3, interval=0.05)
+                time.sleep(0.1)
+
+                # Check what we got
+                pyautogui.hotkey('ctrl', 'c')
+                time.sleep(0.2)
+                triple_click_text = pyperclip.paste()
+
+                # Use whichever selection had more content
+                if len(triple_click_text) > len(selected_text):
+                    self.log("Triple-click selection was better, using that instead")
+                    selected_text = triple_click_text
+                else:
+                    # Go back to our original selection
+                    pyautogui.press('escape')
+                    time.sleep(0.1)
+
+                    # Move to the beginning of the first line again
+                    for _ in range(lines_in_block * 2):  # Extra iterations to ensure we get to the top
+                        pyautogui.press('up')
+                        time.sleep(0.02)
+                    pyautogui.press('home')
+                    time.sleep(0.1)
+
+                    # Re-select using Shift+Down
+                    pyautogui.keyDown('shift')
+                    for _ in range(lines_in_block - 1):
+                        pyautogui.press('down')
+                        time.sleep(0.02)
+                    pyautogui.press('end')  # Select to end of last line
+                    pyautogui.keyUp('shift')
+                    time.sleep(0.1)
+
+                    # Re-copy
+                    pyautogui.hotkey('ctrl', 'c')
+                    time.sleep(0.2)
+                    selected_text = pyperclip.paste()
+
+            # Log the selection status
             selected_lines = len(selected_text.splitlines())
-            self.log(f"Selected {selected_lines} lines (expected {lines_to_select})")
+            self.log(f"Selected {selected_lines} lines (expected {lines_in_block})")
 
             # Process the selected text with the LLM
-            processed_text = self.process_code_with_llm(
+            processed_text = self.process_content_with_llm(
                 selected_text,
                 input_text,
+                state.content_type,
                 language,
                 block_type
             )
 
-            # Paste the processed text
+            # Now paste the processed text over the selection
+            # The block should still be selected from above
             pyperclip.copy(processed_text)
             time.sleep(0.2)
             pyautogui.hotkey('ctrl', 'v')
             time.sleep(CONFIG['COPY_PASTE_DELAY'])
-            self.log(f"Replaced code block with processed text")
+            self.log(f"Replaced {state.content_type} block with processed text")
 
             return True
 
         except Exception as e:
-            self.log(f"Error in select_and_process_code_block_with_ocr: {e}")
+            self.log(f"Error in select_and_process_block: {e}")
             traceback.print_exc()
             return False
-
 
 # --------------------- Overlay Application --------------------- #
 
 class OverlayTextApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Code Modifier")
+        self.root.title("Content Modifier")
         self.setup_ui()
 
         # Initialize state variables
@@ -868,8 +1357,8 @@ class OverlayTextApp:
         self.debug_mode = True  # Set to True to see debug information
         self.last_inserted_text = None
 
-        # Initialize the code processor
-        self.code_processor = CodeProcessor(debug=self.debug_mode)
+        # Initialize the content processor
+        self.content_processor = ContentProcessor(debug=self.debug_mode)
 
         # Start monitors and set up hooks
         self.setup_keyboard_hook()
@@ -878,12 +1367,6 @@ class OverlayTextApp:
         # Log startup
         self.log("Application started")
         self.log(f"Running on: {PLATFORM} platform")
-
-    # Modification 1: Update the setup_ui method to hide the lines entry field
-    # Replace the original lines frame section with a label that shows auto-detection is enabled
-
-    # Modification 1: Update the setup_ui method to remove both search text and lines entry fields
-    # Make a simpler UI focused just on entering modification instructions
 
     def setup_ui(self):
         """Set up the user interface"""
@@ -899,7 +1382,7 @@ class OverlayTextApp:
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         window_width = 600  # Increased width
-        window_height = 260  # Height for simpler UI
+        window_height = 280  # Slightly increased height for content type indicator
         position_x = (screen_width - window_width) // 2
         position_y = (screen_height - window_height) // 3
         self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
@@ -911,31 +1394,41 @@ class OverlayTextApp:
         # Instructions label
         instructions = tk.Label(
             main_frame,
-            text="Code Modifier",
+            text="Content Modifier",
             font=("Arial", 14, "bold")
         )
         instructions.pack(pady=(0, 5))
 
         # Auto-detection info as subtitle
-        subtitle = tk.Label(
+        self.subtitle = tk.Label(
             main_frame,
-            text="Automatically detects code block at cursor position",
+            text="Automatically detects code or text at cursor position",
             font=("Arial", 10),
             fg="blue"
         )
-        subtitle.pack(pady=(0, 10))
+        self.subtitle.pack(pady=(0, 10))
 
-        # Modification instructions - now the main focus of the UI
+        # Content type indicator
+        self.content_type_label = tk.Label(
+            main_frame,
+            text="Current content type: Detecting...",
+            font=("Arial", 10, "italic"),
+            fg="purple"
+        )
+        self.content_type_label.pack(pady=(0, 5))
+
+        # Modification instructions - main focus of the UI
         mod_label = tk.Label(main_frame, text="Enter modification instructions:", anchor="w",
                              font=("Arial", 11, "bold"))
         mod_label.pack(fill=tk.X, pady=(10, 5), padx=5)
 
         self.text_entry = tk.Text(main_frame, height=5, width=40, font=("Arial", 11))
         self.text_entry.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.text_entry.bind("<Control-Return>", self.process_code)
+        self.text_entry.bind("<Control-Return>", self.process_content)
 
         # Add hint text
-        hint_label = tk.Label(main_frame, text="Position cursor in a code block, then enter instructions above",
+        hint_label = tk.Label(main_frame,
+                              text="Position cursor in a paragraph or code block, then enter instructions above",
                               fg="gray", font=("Arial", 9))
         hint_label.pack(fill=tk.X, pady=(0, 5), padx=5)
 
@@ -946,9 +1439,9 @@ class OverlayTextApp:
         # Process button
         self.process_button = tk.Button(
             button_frame,
-            text="Process Code (Ctrl+Enter)",
+            text="Process Content (Ctrl+Enter)",
             font=("Arial", 11),
-            command=self.process_code
+            command=self.process_content
         )
         self.process_button.pack(side=tk.LEFT, padx=5)
 
@@ -976,11 +1469,8 @@ class OverlayTextApp:
         # Add keyboard bindings
         self.root.bind("<Escape>", lambda e: self.hide_overlay())
 
-    # Modification 2: Update the process_code method to automatically determine search text and line count
-    # We'll use the preview_code_block functionality to detect the code block at cursor position
-
-    def process_code(self, event=None):
-        """Process the code block based on user inputs."""
+    def process_content(self, event=None):
+        """Process the content block based on user inputs."""
         input_text = self.text_entry.get("1.0", tk.END).strip()
 
         if not input_text:
@@ -1030,20 +1520,20 @@ class OverlayTextApp:
             # Wait a moment for window to activate
             time.sleep(0.3)
 
-            # First detect the code block to get the first line as search text
+            # First detect the block to get the first line as search text
             current_x, current_y = pyautogui.position()
-            block_text, start, end, language, block_type = self.code_processor.preview_code_block(current_x, current_y)
+            block_text, start, end, language, block_type = self.content_processor.preview_block(current_x, current_y)
 
             if not block_text:
-                self.log("Failed to detect code block", error=True)
-                self.show_error("Could not detect code block. Please position cursor within a code block.")
+                self.log("Failed to detect content block", error=True)
+                self.show_error("Could not detect content. Please position cursor within text or code.")
                 return
 
-            # Extract the first line of the code block as search text
+            # Extract the first line of the block as search text
             lines = block_text.splitlines()
             if not lines:
-                self.log("Detected empty code block", error=True)
-                self.show_error("Detected code block has no content")
+                self.log("Detected empty block", error=True)
+                self.show_error("Detected block has no content")
                 return
 
             # Use the first line of the block as search text
@@ -1056,43 +1546,49 @@ class OverlayTextApp:
                         break
 
             if not search_text:
-                self.log("Could not find suitable search text in code block", error=True)
-                self.show_error("Could not find suitable text in code block to use as search anchor")
+                self.log("Could not find suitable search text in block", error=True)
+                self.show_error("Could not find suitable text in block to use as search anchor")
                 return
 
             self.log(f"Auto-detected search text: '{search_text}'")
-            self.log(f"Processing code block: lines {start}-{end}, type: {block_type}, language: {language}")
+
+            if state.content_type == "code":
+                self.log(f"Processing code block: lines {start}-{end}, type: {block_type}, language: {language}")
+            else:
+                self.log(f"Processing text block: lines {start}-{end}")
+
             self.log(f"Modification: '{input_text}'")
 
-            # Process the code block with auto-detected search text and auto-detected line count
-            success = self.code_processor.select_and_process_code_block_with_ocr(
+            # Process the content block with auto-detected properties
+            success = self.content_processor.select_and_process_block(
                 search_text,
                 input_text,
                 None  # Always pass None to force auto-detection of line count
             )
 
             if success:
-                self.log("Code processed successfully")
-                self.update_status("Code modified successfully")
+                self.log("Content processed successfully")
+                self.update_status("Content modified successfully")
             else:
-                self.log("Failed to process code block", error=True)
-                self.update_status("Failed to process code", error=True)
+                self.log("Failed to process content block", error=True)
+                self.update_status("Failed to process content", error=True)
 
             # Restore original clipboard after a brief pause
             time.sleep(0.3)
             pyperclip.copy(original_clipboard)
 
         except Exception as e:
-            self.log(f"Error during code processing: {e}", error=True)
-            self.show_error(f"Failed to process code: {str(e)}")
+            self.log(f"Error during content processing: {e}", error=True)
+            self.show_error(f"Failed to process content: {str(e)}")
 
             # Restore original clipboard
             pyperclip.copy(original_clipboard)
+
     def setup_keyboard_hook(self):
         """Set up keyboard hooks for activation"""
         try:
             # For global hotkey activation
-            keyboard.add_hotkey('ctrl+shift+o', self.show_overlay)  # Changed from t to o
+            keyboard.add_hotkey('ctrl+shift+m', self.show_overlay)  # Changed from O to M for "Modifier"
 
             # Start keyboard listener to track typing activity
             self.kb_listener = kb.Listener(on_press=self.on_key_press)
@@ -1119,7 +1615,7 @@ class OverlayTextApp:
                     hwnd = win32gui.GetForegroundWindow()
                     if hwnd:
                         window_title = win32gui.GetWindowText(hwnd)
-                        if window_title and window_title != "Code Modifier":
+                        if window_title and window_title != "Content Modifier":
                             self.last_active_window = hwnd
                             self.last_active_window_title = window_title
                             # Update global state
@@ -1132,7 +1628,7 @@ class OverlayTextApp:
                     # macOS approach - if pygetwindow is working
                     try:
                         active_window = gw.getActiveWindow()
-                        if active_window and active_window.title != "Code Modifier":
+                        if active_window and active_window.title != "Content Modifier":
                             self.last_active_window = active_window
                             self.last_active_window_title = active_window.title
                             # Update global state
@@ -1153,7 +1649,7 @@ class OverlayTextApp:
                     display = Xlib.display.Display()
                     window = display.get_input_focus().focus
                     wmname = window.get_wm_name()
-                    if wmname and "Code Modifier" not in wmname:
+                    if wmname and "Content Modifier" not in wmname:
                         self.last_active_window = window
                         self.last_active_window_title = wmname
                         # Update global state
@@ -1181,20 +1677,39 @@ class OverlayTextApp:
             pass
 
     def show_overlay(self):
-        """Show the overlay window"""
+        """Show the overlay window and prepare the UI"""
         if not self.is_visible:
             try:
+                # Try to detect content type before showing UI
+                try:
+                    # Get current position
+                    x, y = pyautogui.position()
+
+                    # Preview block to detect content type
+                    block_text, _, _, _, _ = self.content_processor.preview_block(x, y)
+
+                    # Update UI based on detected content type
+                    if state.content_type == "code":
+                        self.content_type_label.config(text="Current content type: Code", fg="blue")
+                        self.subtitle.config(text="Automatically detects code blocks at cursor position")
+                    else:
+                        self.content_type_label.config(text="Current content type: Text", fg="green")
+                        self.subtitle.config(text="Automatically detects text paragraphs at cursor position")
+                except:
+                    # If detection fails, show neutral message
+                    self.content_type_label.config(text="Current content type: Detecting...", fg="purple")
+                    self.subtitle.config(text="Automatically detects code or text at cursor position")
+
                 # Save the current active window before we take focus
-                self.update_status("Ready to process code")
+                self.update_status("Ready to process content")
 
                 # Show the window
                 self.root.deiconify()
                 self.is_visible = True
 
-                # Reset and focus search entry
-                self.search_entry.delete(0, tk.END)
+                # Reset and focus text entry
                 self.text_entry.delete("1.0", tk.END)
-                self.search_entry.focus_set()
+                self.text_entry.focus_set()
 
                 self.log("Overlay shown")
             except Exception as e:
@@ -1247,7 +1762,7 @@ def on_click(x, y, button, pressed):
 def main():
     """Main entry point"""
     print("-" * 60)
-    print("OCR-Guided Code Selection and Modification Tool")
+    print("Content Modification Tool - For Code and Text")
     print("-" * 60)
     print(f"Platform detected: {sys.platform}")
 
@@ -1262,14 +1777,12 @@ def main():
 
         # Show instructions
         print("\nInstructions:")
-        print("1. Position your cursor within a code block")
-        print("2. Press Ctrl+Shift+O to show the overlay")
-        print("3. Enter text to search for (start of code block)")
-        print("4. Enter number of lines to select (optional)")
-        print("5. Enter modification instructions for Claude")
-        print("6. Press Ctrl+Enter or click 'Process Code'")
-        print("7. The app will find the code, select it, and modify it")
-        print("8. Press Escape or click 'Cancel' to hide the overlay")
+        print("1. Position your cursor within a code block or text paragraph")
+        print("2. Press Ctrl+Shift+M to show the overlay")
+        print("3. Enter modification instructions for Claude")
+        print("4. Press Ctrl+Enter or click 'Process Content'")
+        print("5. The app will find the text/code, select it, and modify it")
+        print("6. Press Escape or click 'Cancel' to hide the overlay")
 
         print("\nApplication running... (Press Ctrl+C in this console to exit)")
 

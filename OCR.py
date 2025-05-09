@@ -11,15 +11,18 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 def get_screenshot(countdown=3):
     """Take a screenshot after a countdown"""
+    # Announce the start of countdown with number of seconds
     print(f"Taking screenshot in {countdown} seconds...")
+    # Loop counts down from initial number to 1
     for i in range(countdown, 0, -1):
+        # Print current number with ellipsis
         print(f"{i}...")
+        # Pause for 1 second before next iteration
         time.sleep(1)
-
+    # Announce that screenshot is being taken
     print("Capturing screenshot now!")
+    # Capture and return the screenshot using pyautogui
     return pyautogui.screenshot()
-
-
 def clean_text(text):
     """Clean text for better matching"""
     # Remove extra spaces and normalize whitespace

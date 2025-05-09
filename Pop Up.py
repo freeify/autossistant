@@ -171,16 +171,147 @@ class InputMonitor:
         except Exception:
             return False
 
+    # Add these improvements to your InputMonitor class
+
     def update_textbox_state(self, visible):
         """Update the textbox visibility state and find its bounds if visible"""
         self.textbox_visible = visible
         if visible:
             # Try to find the textbox window to get its bounds
             self.find_electron_textbox_window()
+            # Deactivate plus icon when textbox is visible
+            self.send_message(f"hide_plus_icon\n")
         else:
             # Reset textbox information when hidden
             self.textbox_hwnd = None
             self.textbox_bounds = None
+            # Always show plus icon when textbox is hidden
+            self.send_message(f"show_plus_icon\n")
+
+    def on_mouse_move(self, x, y):
+        """Track mouse movement to detect hover state for textbox"""
+        try:
+            # Get the actual screen coordinates
+            cursor_x, cursor_y = win32gui.GetCursorPos()
+
+            # Only send position updates when the textbox is not visible
+            if not self.textbox_visible:
+                self.send_message(f"cursor_position|{cursor_x},{cursor_y}\n")
+
+                # If we have a plus icon identified, check if mouse is over it
+                if self.plus_icon_bounds:
+                    if self.is_point_in_rect(cursor_x, cursor_y, self.plus_icon_bounds):
+                        # Mouse is over plus icon, show textbox
+                        self.send_message(f"show_textbox|{cursor_x},{cursor_y}\n")
+                        self.textbox_visible = True
+        except Exception as e:
+            print(f"Error tracking mouse movement: {e}")
+
+    def find_electron_textbox_window(self):
+        """Find and store the Electron textbox window handle and bounds"""
+
+        def enum_windows_callback(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                window_text = win32gui.GetWindowText(hwnd)
+                class_name = win32gui.GetClassName(hwnd)
+
+                # Look for Electron window with textbox
+                if "Electron" in class_name or "Chrome_WidgetWin" in class_name:
+                    try:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        # Check if window size matches our expected textbox
+                        width = rect[2] - rect[0]
+                        height = rect[3] - rect[1]
+
+                        # Store potential textbox window if size is reasonable
+                        if 300 <= width <= 350 and 70 <= height <= 100:
+                            self.textbox_hwnd = hwnd
+                            self.textbox_bounds = rect
+                            print(f"Found textbox window: {hwnd}, bounds: {rect}")
+                            return False  # Stop enumeration once found
+                    except Exception as e:
+                        print(f"Error getting window rect: {e}")
+            return True  # Continue enumeration
+
+        try:
+            win32gui.EnumWindows(enum_windows_callback, None)
+        except Exception as e:
+            print(f"Error enumerating windows: {e}")
+
+    def find_plus_icon_window(self):
+        """Find and store the Electron plus icon window handle and bounds"""
+
+        def enum_windows_callback(hwnd, extra):
+            if win32gui.IsWindowVisible(hwnd):
+                class_name = win32gui.GetClassName(hwnd)
+
+                # Look for Electron window with plus icon (very small window)
+                if "Electron" in class_name or "Chrome_WidgetWin" in class_name:
+                    try:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        # Check if window size matches our expected plus icon
+                        width = rect[2] - rect[0]
+                        height = rect[3] - rect[1]
+
+                        # Plus icon should be very small
+                        if 20 <= width <= 40 and 20 <= height <= 40:
+                            self.plus_icon_hwnd = hwnd
+                            self.plus_icon_bounds = rect
+                            print(f"Found plus icon window: {hwnd}, bounds: {rect}")
+                            return False  # Stop enumeration once found
+                    except Exception as e:
+                        print(f"Error getting window rect: {e}")
+            return True  # Continue enumeration
+
+        try:
+            win32gui.EnumWindows(enum_windows_callback, None)
+        except Exception as e:
+            print(f"Error enumerating windows: {e}")
+
+    # Add a mouse move listener to your start method
+    def start(self):
+        # Start mouse listener for clicks
+        self.mouse_listener = mouse.Listener(on_click=self.on_click)
+        self.mouse_listener.start()
+        print("Mouse listener started")
+
+        # Add mouse move listener
+        self.mouse_move_listener = mouse.Listener(on_move=self.on_mouse_move)
+        self.mouse_move_listener.start()
+        print("Mouse move listener started")
+
+        # Start keyboard listener
+        self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
+        self.keyboard_listener.start()
+        print("Keyboard listener started")
+
+        # Start clipboard monitor
+        clipboard_thread = threading.Thread(target=self.check_clipboard, daemon=True)
+        clipboard_thread.start()
+        print("Clipboard monitor started")
+
+        # Start listening for app messages
+        self.listen_for_app_messages()
+
+        # Activate cursor tracking
+        self.cursor_track_active = True
+
+        # Find the plus icon window
+        self.find_plus_icon_window()
+
+        # Keep the script running
+        try:
+            print("Input monitor running. Press Ctrl+C to stop.")
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Stopping monitors...")
+            self.cursor_track_active = False
+            self.mouse_listener.stop()
+            self.mouse_move_listener.stop()
+            self.keyboard_listener.stop()
+            if self.socket:
+                self.socket.close()
 
     def on_click(self, x, y, button, pressed):
         if pressed:
@@ -429,40 +560,6 @@ class InputMonitor:
         thread.start()
         print("Message listener started")
 
-    def start(self):
-        # Start mouse listener
-        self.mouse_listener = mouse.Listener(on_click=self.on_click)
-        self.mouse_listener.start()
-        print("Mouse listener started")
-
-        # Start keyboard listener
-        self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
-        self.keyboard_listener.start()
-        print("Keyboard listener started")
-
-        # Start clipboard monitor
-        clipboard_thread = threading.Thread(target=self.check_clipboard, daemon=True)
-        clipboard_thread.start()
-        print("Clipboard monitor started")
-
-        # Start listening for app messages
-        self.listen_for_app_messages()
-
-        # Activate cursor tracking
-        self.cursor_track_active = True
-
-        # Keep the script running
-        try:
-            print("Input monitor running. Press Ctrl+C to stop.")
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Stopping monitors...")
-            self.cursor_track_active = False
-            self.mouse_listener.stop()
-            self.keyboard_listener.stop()
-            if self.socket:
-                self.socket.close()
 
 
 if __name__ == "__main__":
