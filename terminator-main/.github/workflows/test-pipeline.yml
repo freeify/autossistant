@@ -1,0 +1,44 @@
+name: Test Pipeline (Staging)
+
+on:
+  push:
+    branches: [ bugfix, refix ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build & Release Staging
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Build Release
+      working-directory: crates/terminator-uia-tracker
+      run: cargo build --release
+      
+    - name: Prepare Bundle
+      shell: pwsh
+      run: |
+        $ReleaseDir = "dist-staging"
+        New-Item -ItemType Directory -Path $ReleaseDir
+        Copy-Item "crates/terminator-uia-tracker/target/release/terminator-uia-tracker.exe" -Destination $ReleaseDir
+        Copy-Item "crates/terminator-uia-tracker/tracker_headless.py" -Destination $ReleaseDir
+        Compress-Archive -Path "$ReleaseDir\*" -DestinationPath "docutive-tracker-staging.zip"
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: docutive-tracker-staging.zip
+        tag_name: staging-${{ github.sha }}
+        name: Staging Build (Test)
+        prerelease: true
+        body: |
+          Automated Test/Staging build for Docutive Tracker.
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
