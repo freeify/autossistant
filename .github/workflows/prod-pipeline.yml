@@ -1,0 +1,45 @@
+name: Prod Pipeline (Production)
+
+on:
+  push:
+    branches: [ refix, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build & Release Production
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Build Release
+      working-directory: terminator-main/crates/terminator-uia-tracker
+      run: |
+        cargo build --release
+        
+    - name: Prepare Bundle
+      shell: pwsh
+      run: |
+        $ReleaseDir = "dist-prod"
+        New-Item -ItemType Directory -Path $ReleaseDir
+        Copy-Item "terminator-main/crates/terminator-uia-tracker/target/release/docutive.exe" -Destination $ReleaseDir
+        Copy-Item "terminator-main/crates/terminator-uia-tracker/tracker_headless.py" -Destination $ReleaseDir
+        Compress-Archive -Path "$ReleaseDir\*" -DestinationPath "docutive-tracker-production.zip"
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: docutive-tracker-production.zip
+        tag_name: v${{ github.run_number }}
+        name: Production Build v${{ github.run_number }}
+        prerelease: false
+        body: |
+          Official Production build for Docutive Tracker.
+          Version: 0.1.1
+          Commit: ${{ github.sha }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
